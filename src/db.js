@@ -51,6 +51,22 @@ async function openDb() {
       UNIQUE(user_id, name),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+    -- Structured tasks per project
+    CREATE TABLE IF NOT EXISTS project_tasks (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      task_id TEXT NOT NULL, -- exactly 8 lowercase a-z0-9
+      task_info TEXT NOT NULL,
+      parent_id TEXT, -- references task_id within same project (not FK-enforced)
+      status TEXT NOT NULL, -- 'pending' | 'in_progress' | 'completed'
+      extra_note TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      UNIQUE(user_id, project_id, task_id),
+      FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_user_project ON project_tasks(user_id, project_id);
   `);
   // Enable foreign key constraints in SQLite (helps catch bad user_id early)
   try { db.exec('PRAGMA foreign_keys = ON;'); } catch {}
@@ -181,6 +197,30 @@ export async function listProjects(userId) {
   return names;
 }
 
+export async function getProjectByName(userId, name) {
+  const db = await openDb();
+  const stmt = db.prepare('SELECT id, name FROM user_projects WHERE user_id = $u AND name = $n');
+  stmt.bind({ $u: userId, $n: name });
+  const ok = stmt.step();
+  if (!ok) { stmt.free(); return null; }
+  const r = stmt.getAsObject();
+  stmt.free();
+  return { id: r.id, name: r.name };
+}
+
+export async function listUserTaskIds(userId) {
+  const db = await openDb();
+  const stmt = db.prepare('SELECT task_id FROM project_tasks WHERE user_id = $u');
+  stmt.bind({ $u: userId });
+  const ids = [];
+  while (stmt.step()) {
+    const r = stmt.getAsObject();
+    ids.push(String(r.task_id));
+  }
+  stmt.free();
+  return ids;
+}
+
 export async function initProject(userId, name, { agentJson, progressJson }) {
   const db = await openDb();
   const now = new Date().toISOString();
@@ -259,3 +299,145 @@ export async function writeDoc(userId, name, which, content) {
 }
 
 export const _internal = { openDb, persistDb };
+
+// ---------------- Structured Tasks APIs ----------------
+
+export async function listTasks(userId, projectName, { only } = {}) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const rows = [];
+  let query = 'SELECT task_id, task_info, parent_id, status, extra_note, created_at, updated_at FROM project_tasks WHERE user_id = $u AND project_id = $p';
+  let bind = { $u: userId, $p: proj.id };
+  if (Array.isArray(only) && only.length) {
+    const placeholders = only.map((_, i) => `$s${i}`);
+    query += ` AND status IN (${placeholders.join(',')})`;
+    only.forEach((s, i) => { bind[`$s${i}`] = String(s); });
+  }
+  query += ' ORDER BY created_at ASC';
+  const stmt = db.prepare(query);
+  stmt.bind(bind);
+  while (stmt.step()) {
+    const r = stmt.getAsObject();
+    rows.push({
+      task_id: r.task_id,
+      task_info: r.task_info,
+      parent_id: r.parent_id || null,
+      status: r.status,
+      extra_note: r.extra_note || null,
+      created_at: r.created_at,
+      updated_at: r.updated_at || null,
+    });
+  }
+  stmt.free();
+  return rows;
+}
+
+export async function addTasks(userId, projectName, tasks) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const now = new Date().toISOString();
+  const added = [];
+  const exists = [];
+  const check = db.prepare('SELECT 1 FROM project_tasks WHERE user_id = $u AND project_id = $p AND task_id = $tid LIMIT 1');
+  for (const t of tasks) {
+    // pre-check for duplicates
+    check.bind({ $u: userId, $p: proj.id, $tid: t.task_id });
+    const already = check.step();
+    check.reset();
+    if (already) { exists.push(t.task_id); continue; }
+    const rowId = newUserId();
+    const stmt = db.prepare(`
+      INSERT INTO project_tasks (id, user_id, project_id, task_id, task_info, parent_id, status, extra_note, created_at)
+      VALUES ($id, $u, $p, $tid, $info, $pid, $st, $note, $now)
+    `);
+    stmt.bind({
+      $id: rowId,
+      $u: userId,
+      $p: proj.id,
+      $tid: t.task_id,
+      $info: t.task_info,
+      $pid: t.parent_id || null,
+      $st: t.status,
+      $note: t.extra_note || null,
+      $now: now,
+    });
+    stmt.step();
+    stmt.free();
+    added.push(t.task_id);
+  }
+  check.free();
+  await persistDb();
+  return { added, exists };
+}
+
+export async function replaceTasks(userId, projectName, tasks) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  // Delete existing tasks for this project
+  const del = db.prepare('DELETE FROM project_tasks WHERE user_id = $u AND project_id = $p');
+  del.bind({ $u: userId, $p: proj.id });
+  del.step();
+  del.free();
+  await persistDb();
+  // Add all new tasks
+  return await addTasks(userId, projectName, tasks);
+}
+
+export async function setTasksState(userId, projectName, { matchIds = [], matchText = [], state }) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const now = new Date().toISOString();
+  const changedIds = new Set();
+  const notMatched = [];
+
+  // Update by IDs
+  const selById = db.prepare('SELECT status FROM project_tasks WHERE user_id = $u AND project_id = $p AND task_id = $tid');
+  for (const tid of matchIds) {
+    selById.bind({ $u: userId, $p: proj.id, $tid: tid });
+    const exists = selById.step();
+    selById.reset();
+    if (!exists) { notMatched.push(tid); continue; }
+    const upd = db.prepare('UPDATE project_tasks SET status = $st, updated_at = $now WHERE user_id = $u AND project_id = $p AND task_id = $tid');
+    upd.bind({ $st: state, $now: now, $u: userId, $p: proj.id, $tid: tid });
+    upd.step();
+    upd.free();
+    changedIds.add(tid);
+  }
+
+  // Update by text contains
+  for (const term of matchText) {
+    const q = db.prepare('SELECT task_id, task_info FROM project_tasks WHERE user_id = $u AND project_id = $p');
+    q.bind({ $u: userId, $p: proj.id });
+    let matchedAny = false;
+    while (q.step()) {
+      const r = q.getAsObject();
+      if (String(r.task_info || '').toLowerCase().includes(String(term).toLowerCase())) {
+        const upd = db.prepare('UPDATE project_tasks SET status = $st, updated_at = $now WHERE user_id = $u AND project_id = $p AND task_id = $tid');
+        upd.bind({ $st: state, $now: now, $u: userId, $p: proj.id, $tid: r.task_id });
+        upd.step();
+        upd.free();
+        changedIds.add(r.task_id);
+        matchedAny = true;
+      }
+    }
+    q.free();
+    if (!matchedAny) notMatched.push(term);
+  }
+  await persistDb();
+  return { changedIds: Array.from(changedIds.values()), notMatched };
+}
+
+export async function deleteAllTasks(userId, projectName) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const del = db.prepare('DELETE FROM project_tasks WHERE user_id = $u AND project_id = $p');
+  del.bind({ $u: userId, $p: proj.id });
+  del.step();
+  del.free();
+  await persistDb();
+}

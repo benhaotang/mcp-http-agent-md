@@ -136,76 +136,82 @@ async function run() {
     const agentText2c = readAgent2c.content?.[0]?.text || '';
     assert(agentText2c.includes('Hello world!!!') && agentText2c.includes('More'), 'implicit patch mode should apply when patch is provided');
 
-    // 5) write_progress and verify
-    await client.callTool({ name: 'write_progress', arguments: { name, content: '# progress\n- [ ] first\n- [ ] second\n' } });
+    // 5) Add structured tasks (8-char IDs)
+    const t1 = { task_id: 'a1b2c3d4', task_info: 'first', status: 'pending' };
+    const t2 = { task_id: 'b2c3d4e5', task_info: 'second', status: 'in_progress' };
+    const t3 = { task_id: 'c3d4e5f6', task_info: 'third', status: 'completed' };
+    const addTasksRes = await client.callTool({ name: 'progress_add', arguments: { name, item: [t1, t2, t3] } });
+    const addTasks = JSON.parse(addTasksRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(addTasks.added) && addTasks.added.length === 3, 'Should add three tasks');
+
+    // 6) read_progress returns JSON tasks and filter by status
     let readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
-    let progressText = readProgress.content?.[0]?.text || '';
-    assert(progressText.includes('- [ ] first') && progressText.includes('- [ ] second'), 'progress.md should include seeded items');
+    let tasksPayload = JSON.parse(readProgress.content?.[0]?.text || '{}');
+    assert(Array.isArray(tasksPayload.tasks) && tasksPayload.tasks.length >= 3, 'Should list tasks');
+    const ids = tasksPayload.tasks.map(t => t.task_id);
+    assert(ids.includes('a1b2c3d4') && ids.includes('b2c3d4e5') && ids.includes('c3d4e5f6'), 'Should contain all task ids');
 
-    // 6) progress_add appends a new item
-    await client.callTool({ name: 'progress_add', arguments: { name, item: 'third' } });
-    readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
-    progressText = readProgress.content?.[0]?.text || '';
-    assert(progressText.includes('- [ ] third'), 'progress_add should append pending item');
-
-    // 7) progress_set_state by text match (set second to in_progress)
-    await client.callTool({ name: 'progress_set_state', arguments: { name, match: 'second', state: 'in_progress' } });
-    readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
-    progressText = readProgress.content?.[0]?.text || '';
-    assert(/- \[~\] second/.test(progressText), 'Item 2 should be in_progress');
-
-    // 8) progress_set_state by match (complete the one containing "third")
-    await client.callTool({ name: 'progress_set_state', arguments: { name, match: 'third', state: 'completed' } });
-    readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
-    progressText = readProgress.content?.[0]?.text || '';
-    assert(/- \[x\] third/.test(progressText), 'Item matched by text should be completed');
-
-    // 8.1) read_progress filter tests
-    const onlyTodo = await client.callTool({ name: 'read_progress', arguments: { name, only: 'todo' } });
-    const todoText = onlyTodo.content?.[0]?.text || '';
-    assert(/- \[ \] first/.test(todoText), 'Filter todo should include pending first');
-    assert(!/second/.test(todoText) && !/third/.test(todoText), 'Filter todo should exclude other states');
-
+    const onlyPending = await client.callTool({ name: 'read_progress', arguments: { name, only: 'pending' } });
+    const onlyPendingJson = JSON.parse(onlyPending.content?.[0]?.text || '{}');
+    assert(onlyPendingJson.tasks.every(t => t.status === 'pending'), 'Filter pending should include only pending');
     const onlyDoing = await client.callTool({ name: 'read_progress', arguments: { name, only: 'in_progress' } });
-    const doingText = onlyDoing.content?.[0]?.text || '';
-    assert(/- \[~\] second/.test(doingText), 'Filter in_progress should include second');
-
+    const onlyDoingJson = JSON.parse(onlyDoing.content?.[0]?.text || '{}');
+    assert(onlyDoingJson.tasks.every(t => t.status === 'in_progress'), 'Filter in_progress should include only in_progress');
     const onlyDone = await client.callTool({ name: 'read_progress', arguments: { name, only: 'done' } });
-    const doneText = onlyDone.content?.[0]?.text || '';
-    assert(/- \[x\] third/.test(doneText), 'Filter done should include third');
+    const onlyDoneJson = JSON.parse(onlyDone.content?.[0]?.text || '{}');
+    assert(onlyDoneJson.tasks.every(t => t.status === 'completed'), 'Filter done should include only completed');
 
-    // 9) progress_mark_complete by text (complete first)
-    await client.callTool({ name: 'progress_mark_complete', arguments: { name, match: 'first' } });
+    // 7) progress_mark_complete by id
+    await client.callTool({ name: 'progress_mark_complete', arguments: { name, match: 'a1b2c3d4' } });
     readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
-    progressText = readProgress.content?.[0]?.text || '';
-    assert(/- \[x\] first/.test(progressText), 'Item 1 should be completed');
+    tasksPayload = JSON.parse(readProgress.content?.[0]?.text || '{}');
+    const t1row = tasksPayload.tasks.find(t => t.task_id === 'a1b2c3d4');
+    assert(t1row && t1row.status === 'completed', 'a1b2c3d4 should be completed');
 
-    // 9.1) progress_add with list, including duplicate should skip
-    const bulkAddRes = await client.callTool({ name: 'progress_add', arguments: { name, item: ['fourth', 'third'] } });
-    const bulkAdd = JSON.parse(bulkAddRes.content?.[0]?.text || '{}');
-    assert(Array.isArray(bulkAdd.added) && bulkAdd.added.includes('fourth'), 'Bulk add should include fourth');
-    assert(Array.isArray(bulkAdd.skipped) && bulkAdd.skipped.includes('third'), 'Bulk add should skip duplicate third');
+    // 8) progress_add duplicate should report exists
+    const dupRes = await client.callTool({ name: 'progress_add', arguments: { name, item: { task_id: 'c3d4e5f6', task_info: 'third-dup' } } });
+    const dup = JSON.parse(dupRes.content?.[0]?.text || '{}');
+    assert(dup.exists === true, 'Duplicate add should indicate exists');
 
-    // 9.2) progress_set_state with list; include a non-matching term and verify notMatched
-    const setManyRes = await client.callTool({ name: 'progress_set_state', arguments: { name, match: ['fourth', '__nope__'], state: 'completed' } });
-    const setMany = JSON.parse(setManyRes.content?.[0]?.text || '{}');
-    assert(Array.isArray(setMany.changed) && setMany.changed.length >= 1, 'Should change at least one item');
-    assert(Array.isArray(setMany.notMatched) && setMany.notMatched.includes('__nope__'), 'Should report notMatched terms');
+    // 9) progress_set_state with list (one id and one non-matching id)
+    const setRes = await client.callTool({ name: 'progress_set_state', arguments: { name, match: ['b2c3d4e5', 'ffffffff'], state: 'completed' } });
+    const setPayload = JSON.parse(setRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(setPayload.changed) && setPayload.changed.includes('b2c3d4e5'), 'Should change b2c3d4e5');
+    assert(Array.isArray(setPayload.notMatched) && setPayload.notMatched.includes('ffffffff'), 'Should report notMatched');
 
-    // 9.3) progress_set_state with no matches should prompt to pull list
-    const noMatchRes = await client.callTool({ name: 'progress_set_state', arguments: { name, match: ['__really_nope_only__'], state: 'in_progress' } });
-    const noMatch = JSON.parse(noMatchRes.content?.[0]?.text || '{}');
-    assert(Array.isArray(noMatch.changed) && noMatch.changed.length === 0, 'No matches should return empty changed');
-    assert(typeof noMatch.notice === 'string' && /pull updated list/i.test(noMatch.notice), 'Should include notice to pull updated list');
-    assert(noMatch.suggest === 'read_progress', 'Should suggest read_progress');
-
-    // 9.4) write_progress with JSON list content on a new project
+    // 9.4) write_progress replace with structured tasks on a new project
     const name3 = `${name}_arr`;
     await client.callTool({ name: 'init_project', arguments: { name: name3 } });
-    await client.callTool({ name: 'write_progress', arguments: { name: name3, content: ['A', 'B'] } });
+    const tA = { task_id: 'abcd1234', task_info: 'A' };
+    const tB = { task_id: 'bcde2345', task_info: 'B' };
+    const wr = await client.callTool({ name: 'write_progress', arguments: { name: name3, content: [tA, tB] } });
+    const wrPayload = JSON.parse(wr.content?.[0]?.text || '{}');
+    assert(Array.isArray(wrPayload.added) && wrPayload.added.length === 2, 'write_progress should add two tasks');
     const rp3 = await client.callTool({ name: 'read_progress', arguments: { name: name3 } });
-    const pt3 = rp3.content?.[0]?.text || '';
-    assert(/- \[ \] A/.test(pt3) && /- \[ \] B/.test(pt3), 'write_progress should accept JSON list content');
+    const pt3 = JSON.parse(rp3.content?.[0]?.text || '{}');
+    const ids3 = pt3.tasks.map(t => t.task_id);
+    assert(ids3.includes('abcd1234') && ids3.includes('bcde2345'), 'read_progress should list tasks we wrote');
+
+    // 11) generate_task_ids returns unique 8-char ids not colliding with user tasks
+    const genRes = await client.callTool({ name: 'generate_task_ids', arguments: { count: 5 } });
+    const gen = JSON.parse(genRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(gen.ids) && gen.ids.length === 5, 'generate_task_ids should return requested count');
+    const allValid = gen.ids.every(id => /^[a-z0-9]{8}$/.test(id));
+    assert(allValid, 'All generated ids should be 8-char lowercase a-z0-9');
+    const known = new Set(['a1b2c3d4','b2c3d4e5','c3d4e5f6','abcd1234','bcde2345']);
+    const noneCollide = gen.ids.every(id => !known.has(id));
+    assert(noneCollide, 'Generated ids should not collide with existing user tasks');
+
+    // 12) Verify project_id consistency: project_tasks rows use the same id as user_projects.id
+    // This is guaranteed by FK and our insert code; assert it explicitly.
+    const { _internal: dbInternal, getProjectByName } = await import('./src/db.js');
+    const db = await dbInternal.openDb();
+    const projRow = await getProjectByName(created.id, name3);
+    const stmt = db.prepare('SELECT DISTINCT project_id FROM project_tasks WHERE user_id = $u AND project_id = $p');
+    stmt.bind({ $u: created.id, $p: projRow.id });
+    const hasRow = stmt.step();
+    stmt.free();
+    assert(hasRow, 'Tasks should refer to the same project_id as user_projects.id');
 
     // 10) list_projects contains name
     const list2 = await client.callTool({ name: 'list_projects', arguments: {} });

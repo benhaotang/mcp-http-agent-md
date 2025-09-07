@@ -100,6 +100,37 @@ async function run() {
     const agentText2 = readAgent2.content?.[0]?.text || '';
     assert(agentText2.includes('Hello'), 'agent.md should include updated content');
 
+    // 4.1) write_agent patch mode (explicit)
+    const patch1 = [
+      '--- a/AGENTS.md',
+      '+++ b/AGENTS.md',
+      '@@ -1,2 +1,3 @@',
+      ' # agent',
+      '-Hello',
+      '+Hello world',
+      '+New line'
+    ].join('\n');
+    await client.callTool({ name: 'write_agent', arguments: { name, mode: 'patch', patch: patch1 } });
+    const readAgent2b = await client.callTool({ name: 'read_agent', arguments: { name } });
+    const agentText2b = readAgent2b.content?.[0]?.text || '';
+    assert(agentText2b.includes('Hello world') && agentText2b.includes('New line'), 'patch mode should update content via unified diff');
+
+    // 4.2) write_agent patch mode inferred by presence of patch (no mode provided)
+    const patch2 = [
+      '--- a/AGENTS.md',
+      '+++ b/AGENTS.md',
+      '@@ -1,3 +1,4 @@',
+      ' # agent',
+      '-Hello world',
+      '+Hello world!!!',
+      ' New line',
+      '+More'
+    ].join('\n');
+    await client.callTool({ name: 'write_agent', arguments: { name, patch: patch2 } });
+    const readAgent2c = await client.callTool({ name: 'read_agent', arguments: { name } });
+    const agentText2c = readAgent2c.content?.[0]?.text || '';
+    assert(agentText2c.includes('Hello world!!!') && agentText2c.includes('More'), 'implicit patch mode should apply when patch is provided');
+
     // 5) write_progress and verify
     await client.callTool({ name: 'write_progress', arguments: { name, content: '# progress\n- [ ] first\n- [ ] second\n' } });
     let readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });

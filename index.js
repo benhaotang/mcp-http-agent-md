@@ -168,6 +168,101 @@ function filterProgressContent(md, only) {
   return out.join('\n') + (out.length ? '\n' : '');
 }
 
+// ---------- Unified Diff Patch (git-style) helper ----------
+// Minimal unified diff applier for single-file patches.
+// Supports headers (diff --git, index, ---/+++), and @@ hunks with ' ', '+', '-' lines.
+function applyUnifiedDiff(oldText, diffText) {
+  const oldLines = String(oldText ?? '').split(/\n/);
+  const diffLines = String(diffText ?? '').split(/\n/);
+  // Collect hunks
+  const hunks = [];
+  let i = 0;
+  while (i < diffLines.length) {
+    const line = diffLines[i];
+    // Skip file headers and metadata
+    if (/^(diff --git |index |--- |\+\+\+ )/.test(line)) {
+      i++;
+      continue;
+    }
+    const m = line.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+    if (m) {
+      const oldStart = parseInt(m[1], 10);
+      const oldCount = m[2] ? parseInt(m[2], 10) : 1;
+      const newStart = parseInt(m[3], 10);
+      const newCount = m[4] ? parseInt(m[4], 10) : 1;
+      i++;
+      const hunkLines = [];
+      while (i < diffLines.length && !diffLines[i].startsWith('@@ ')) {
+        const hl = diffLines[i];
+        if (/^(diff --git |index |--- |\+\+\+ )/.test(hl)) break;
+        // Only accept proper hunk lines starting with ' ', '+', or '-'.
+        // Ignore other metadata and blank lines.
+        if (/^[ \+\-]/.test(hl)) {
+          hunkLines.push(hl);
+        }
+        i++;
+      }
+      hunks.push({ oldStart, oldCount, newStart, newCount, lines: hunkLines });
+      continue;
+    }
+    // Otherwise ignore
+    i++;
+  }
+
+  if (!hunks.length) {
+    throw new Error('No hunks found in unified diff');
+  }
+
+  // Apply hunks in order
+  const out = [];
+  let origIndex = 0; // 0-based index into oldLines
+  for (const h of hunks) {
+    const targetOldIndex = Math.max(0, h.oldStart - 1);
+    // Copy unchanged lines up to hunk start
+    while (origIndex < targetOldIndex) {
+      out.push(oldLines[origIndex] ?? '');
+      origIndex++;
+    }
+    // Apply hunk
+    let consumedFromOld = 0;
+    let addedToNew = 0;
+    for (const hl of h.lines) {
+      const prefix = hl[0];
+      const text = hl.slice(1);
+      if (prefix === ' ') {
+        const got = oldLines[origIndex] ?? '';
+        if (got !== text) {
+          throw new Error(`Patch context mismatch: expected "${text}" got "${got}"`);
+        }
+        out.push(got);
+        origIndex++;
+        consumedFromOld++;
+        addedToNew++;
+      } else if (prefix === '-') {
+        const got = oldLines[origIndex] ?? '';
+        if (got !== text) {
+          throw new Error(`Patch delete mismatch: expected "${text}" got "${got}"`);
+        }
+        origIndex++;
+        consumedFromOld++;
+      } else if (prefix === '+') {
+        out.push(text);
+        addedToNew++;
+      } else {
+        // Unknown line prefix; be strict
+        throw new Error('Invalid hunk line in patch');
+      }
+    }
+    // Be lenient about count mismatches; treat counts as hints only.
+  }
+  // Append remaining original lines after last hunk
+  while (origIndex < oldLines.length) {
+    out.push(oldLines[origIndex] ?? '');
+    origIndex++;
+  }
+  return out.join('\n');
+}
+
 function normalizeTaskText(s) {
   return String(s || '').trim().toLowerCase();
 }
@@ -445,11 +540,16 @@ function buildMcpServer(userId) {
       },
       {
         name: 'write_agent',
-        description: 'Write AGENTS.md for a project',
+        description: 'Write AGENTS.md for a project. Supports full replace or unified diff patch via optional mode.',
         inputSchema: {
           type: 'object',
-          properties: { name: { type: 'string' }, content: { type: 'string' } },
-          required: ['name', 'content']
+          properties: {
+            name: { type: 'string' },
+            content: { type: 'string', description: 'Full file contents when mode=full (default)' },
+            patch: { type: 'string', description: 'Unified diff (git-style) when mode=patch/diff' },
+            mode: { type: 'string', enum: ['full', 'patch', 'diff'], description: 'Edit mode; defaults to full' }
+          },
+          required: ['name']
         }
       },
       {
@@ -528,9 +628,27 @@ function buildMcpServer(userId) {
         return okText(content);
       }
       case 'write_agent': {
-        const { name: projName, content } = args || {};
-        await ops.writeDoc(projName, 'agent', content);
-        return okText('ok');
+        const { name: projName } = args || {};
+        let { content, patch, mode } = args || {};
+        const editMode = String(mode || (patch ? 'patch' : 'full')).toLowerCase();
+        if (editMode === 'full') {
+          if (typeof content !== 'string') throw new Error('content (string) required for full mode');
+          await ops.writeDoc(projName, 'agent', content);
+          return okText(JSON.stringify({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8') }));
+        }
+        if (editMode === 'patch' || editMode === 'diff') {
+          if (typeof patch !== 'string') throw new Error('patch (unified diff string) required for patch/diff mode');
+          let current = '';
+          try {
+            current = await ops.readDoc(projName, 'agent');
+          } catch {
+            current = '';
+          }
+          const updated = applyUnifiedDiff(current, patch);
+          await ops.writeDoc(projName, 'agent', updated);
+          return okText(JSON.stringify({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8') }));
+        }
+        throw new Error(`Unknown mode: ${mode}`);
       }
       case 'read_progress': {
         const { name: projName, only } = args || {};

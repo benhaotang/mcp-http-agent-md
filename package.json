@@ -1,0 +1,31 @@
+{
+  "name": "mcp-http-agent-md",
+  "version": "0.0.1",
+  "description": "a mcp server for storing and updating agent.md and progress.md",
+  "homepage": "https://github.com/benhaotang/mcp-http-agent-md#readme",
+  "bugs": {
+    "url": "https://github.com/benhaotang/mcp-http-agent-md/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/benhaotang/mcp-http-agent-md.git"
+  },
+  "license": "MIT",
+  "author": "benhaotang",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon --watch index.js --ext js,mjs,cjs index.js",
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "packageManager": "pnpm@10.13.1+sha512.37ebf1a5c7a30d5fabe0c5df44ee8da4c965ca0c5af3dbab28c3a1681b70a256218d05c81c9c0dcf767ef6b8551eb5b960042b9ed4300c59242336377e01cfad"
+}

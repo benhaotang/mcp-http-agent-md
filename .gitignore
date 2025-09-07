@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# PnPM lockfile
+pnpm-lock.yaml
+
+# Logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+
+# OS junk
+.DS_Store

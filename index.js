@@ -55,10 +55,13 @@ import {
   writeDoc as dbWriteDoc,
 } from './src/db.js';
 
-// Utility: sanitize and validate project name
+// Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
-  if (typeof name !== 'string' || name.length === 0) return false;
-  return /^[A-Za-z0-9._-]+$/.test(name);
+  if (typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return false;
+  // Allow common characters and spaces; disallow control characters and symbols
+  return /^[A-Za-z0-9._\- ]{1,100}$/.test(trimmed);
 }
 // DB-backed project and file operations (per-user)
 function userOps(userId) {
@@ -610,6 +613,9 @@ function buildMcpServer(userId) {
       case 'init_project': {
         const { name: projName, agent, progress } = args || {};
         try {
+          if (!validateProjectName(projName)) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
+          }
           const result = await ops.initProject(projName, { agent, progress });
           return okText(JSON.stringify({ status: 'ok', ...result }));
         } catch (err) {

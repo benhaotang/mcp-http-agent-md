@@ -222,16 +222,42 @@ function applyUnifiedDiff(oldText, diffText) {
   // Apply hunks in order
   const out = [];
   let origIndex = 0; // 0-based index into oldLines
+
+  // Helper: find where to apply hunk based on its context (' ' and '-') lines
+  function findHunkAnchor(startAt, hunk) {
+    const expected = [];
+    for (const hl of hunk.lines) {
+      const p = hl[0];
+      if (p === ' ' || p === '-') expected.push(noCR(hl.slice(1)));
+    }
+    if (!expected.length) return Math.max(0, hunk.oldStart - 1); // no anchor; fall back to header
+    // Search from current position forward
+    for (let pos = Math.max(0, startAt); pos + expected.length <= oldLines.length; pos++) {
+      let ok = true;
+      for (let k = 0; k < expected.length; k++) {
+        if (noCR(oldLines[pos + k]) !== expected[k]) { ok = false; break; }
+      }
+      if (ok) return pos;
+    }
+    // As a fallback, search entire file
+    for (let pos = 0; pos + expected.length <= oldLines.length; pos++) {
+      let ok = true;
+      for (let k = 0; k < expected.length; k++) {
+        if (noCR(oldLines[pos + k]) !== expected[k]) { ok = false; break; }
+      }
+      if (ok) return pos;
+    }
+    // If not found, return header-based index so we still error with a clear message
+    return Math.max(0, hunk.oldStart - 1);
+  }
+
   for (const h of hunks) {
-    const targetOldIndex = Math.max(0, h.oldStart - 1);
-    // Copy unchanged lines up to hunk start
-    while (origIndex < targetOldIndex) {
+    const anchor = findHunkAnchor(origIndex, h);
+    while (origIndex < anchor) {
       out.push(noCR(oldLines[origIndex]));
       origIndex++;
     }
-    // Apply hunk
-    let consumedFromOld = 0;
-    let addedToNew = 0;
+    // Apply hunk at anchor
     for (const hl of h.lines) {
       const prefix = hl[0];
       const text = hl.slice(1);
@@ -242,26 +268,29 @@ function applyUnifiedDiff(oldText, diffText) {
         }
         out.push(got);
         origIndex++;
-        consumedFromOld++;
-        addedToNew++;
       } else if (prefix === '-') {
         const got = noCR(oldLines[origIndex]);
-        if (got !== noCR(text)) {
-          throw new Error(`Patch delete mismatch: expected "${text}" got "${got}"`);
+        const want = noCR(text);
+        if (got !== want) {
+          // Heuristic: many generators forget the extra '-' when deleting a markdown bullet.
+          // If the file has '-' + want, treat this as a context-keep (not a deletion).
+          if (got === '-' + want) {
+            // Keep the line as-is instead of deleting
+            out.push(got);
+            origIndex++;
+          } else {
+            throw new Error(`Patch delete mismatch: expected "${text}" got "${got}"`);
+          }
+        } else {
+          origIndex++;
         }
-        origIndex++;
-        consumedFromOld++;
       } else if (prefix === '+') {
         out.push(noCR(text));
-        addedToNew++;
       } else {
-        // Unknown line prefix; be strict
         throw new Error('Invalid hunk line in patch');
       }
     }
-    // Be lenient about count mismatches; treat counts as hints only.
   }
-  // Append remaining original lines after last hunk
   while (origIndex < oldLines.length) {
     out.push(noCR(oldLines[origIndex]));
     origIndex++;
@@ -550,10 +579,13 @@ function buildMcpServer(userId) {
       },
       {
         name: 'read_agent',
-        description: 'Read AGENTS.md for a project',
+        description: 'Read AGENTS.md for a project. Optional: prepend line numbers with N|',
         inputSchema: {
           type: 'object',
-          properties: { name: { type: 'string' } },
+          properties: {
+            name: { type: 'string' },
+            lineNumbers: { type: 'boolean', description: 'If true, prepend line numbers as N|line' }
+          },
           required: ['name']
         }
       },
@@ -651,8 +683,13 @@ function buildMcpServer(userId) {
         return okText(JSON.stringify(result));
       }
       case 'read_agent': {
-        const { name: projName } = args || {};
+        const { name: projName, lineNumbers } = args || {};
         const content = await ops.readDoc(projName, 'agent');
+        if (lineNumbers) {
+          const lines = String(content ?? '').split('\n');
+          const numbered = lines.map((l, idx) => `${idx + 1}|${l.replace(/\r$/, '')}`).join('\n');
+          return okText(numbered);
+        }
         return okText(content);
       }
       case 'write_agent': {

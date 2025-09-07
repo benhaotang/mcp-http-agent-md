@@ -44,6 +44,7 @@ Expose these tools via MCP CallTool:
 - `delete_project` — Delete a project `{ name }`
 - `rename_project` — Rename a project `{ oldName, newName }`
 - `read_agent` — Read agent.md `{ name }`
+- `read_agent` — Read agent.md `{ name, lineNumbers? }`. If `lineNumbers` is `true`, prepends `N|` before each line.
 - `write_agent` — Write agent.md `{ name, content }`
 - `read_progress` — Read progress.md `{ name, only? }`. If `only` is provided, it filters items by state. Accepted values: `"todo"|"to-do"|"pending"` (to-do), `"in_progress"|"in-progress"` (in-progress), `"done"|"completed"` (done). `only` may also be a JSON list of any of these.
 - `write_progress` — Write progress.md `{ name, content }` (string or JSON list like `["task1","task2"]`)

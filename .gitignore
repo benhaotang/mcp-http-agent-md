@@ -1,8 +1,11 @@
 # Dependencies
 node_modules/
 
-# PnPM lockfile
+# pnpm lockfile
 pnpm-lock.yaml
+
+# data
+data/
 
 # Logs
 npm-debug.log*

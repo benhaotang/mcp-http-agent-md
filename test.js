@@ -26,8 +26,8 @@ async function waitForServer(proc, timeoutMs = 8000) {
       }
       try {
         const res = await fetch(BASE, { method: 'GET' });
-        // We expect 405 for GET in stateless mode; any response means server is up
-        if (res.status === 405 || res.status === 404 || res.status === 200) {
+        // Any response means server is up (401 expected now)
+        if ([200,401,404,405].includes(res.status)) {
           clearInterval(interval);
           if (!resolved) { resolved = true; resolve(true); }
         }
@@ -47,7 +47,7 @@ function assert(cond, msg) {
 async function run() {
   console.log('Starting server for tests on port', PORT);
   const child = spawn(process.execPath, ['index.js'], {
-    env: { ...process.env, PORT: String(PORT) },
+    env: { ...process.env, PORT: String(PORT), MAIN_API_KEY: 'test-main-key' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -55,9 +55,19 @@ async function run() {
     await waitForServer(child);
     console.log('Server is up. Running MCP tool tests...');
 
+    // Create a user via admin auth
+    const createRes = await fetch(`http://localhost:${PORT}/auth/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer test-main-key' },
+      body: JSON.stringify({ name: 'test-user' }),
+    });
+    const created = await createRes.json();
+    if (!created?.apiKey) throw new Error('Failed to create user/apiKey');
+    const baseWithKey = `${BASE}?apiKey=${encodeURIComponent(created.apiKey)}`;
+
     // Create MCP client using Streamable HTTP transport
     const client = new Client({ name: 'test-client', version: '0.0.0' });
-    const transport = new StreamableHTTPClientTransport(new URL(BASE));
+    const transport = new StreamableHTTPClientTransport(new URL(baseWithKey));
     await client.connect(transport);
 
     // 1) tools/list

@@ -39,4 +39,20 @@ Expose these tools via MCP CallTool:
 - `progress_set_state` — Set item state `{ name, index?|match?, state: 'pending'|'in_progress'|'completed' }`
 - `progress_mark_complete` — Mark item completed `{ name, index?|match? }`
 
-Transport: Streamable HTTP (stateless JSON response mode). Clients should POST JSON-RPC requests to `/mcp`.
+Transport: Streamable HTTP (stateless JSON response mode). Clients should POST JSON-RPC requests to `/mcp?apiKey=YOUR_USER_API_KEY`.
+
+## Auth
+
+- Protected MCP endpoint: `POST /mcp?apiKey=YOUR_USER_API_KEY`
+- Admin endpoints (Bearer token): `MAIN_API_KEY` from `.env`
+  - `POST /auth/users` — Create a user, returns `{ id, apiKey }`
+  - `GET /auth/users` — List users (masked keys by default)
+  - `GET /auth/users/:id` — Get user
+  - `POST /auth/users/:id/regenerate` — Rotate API key
+  - `DELETE /auth/users/:id` — Delete user
+
+Set up `.env`:
+
+```
+MAIN_API_KEY=change-me
+```

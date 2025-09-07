@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -16,69 +15,50 @@ const __dirname = path.dirname(__filename);
 // Configuration
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const BASE_PATH = process.env.BASE_PATH || '/mcp'; // MCP endpoint path
-const DATA_DIR = path.resolve(__dirname, 'projects');
-
-// Ensure base data directory exists
-async function ensureDataDir() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-}
+import { buildAuthRouter, apiKeyQueryMiddleware } from './src/auth.js';
+import {
+  listProjects as dbListProjects,
+  initProject as dbInitProject,
+  deleteProject as dbDeleteProject,
+  renameProject as dbRenameProject,
+  readDoc as dbReadDoc,
+  writeDoc as dbWriteDoc,
+} from './src/db.js';
 
 // Utility: sanitize and validate project name
 function validateProjectName(name) {
   if (typeof name !== 'string' || name.length === 0) return false;
   return /^[A-Za-z0-9._-]+$/.test(name);
 }
-
-function projectDir(name) {
-  return path.join(DATA_DIR, name);
-}
-
-async function listProjects() {
-  await ensureDataDir();
-  const entries = await fs.readdir(DATA_DIR, { withFileTypes: true });
-  return entries.filter(e => e.isDirectory()).map(e => e.name);
-}
-
-async function initProject(name, { agent = defaultAgentMd(name), progress = defaultProgressMd() } = {}) {
-  if (!validateProjectName(name)) throw new Error('Invalid project name');
-  const dir = projectDir(name);
-  await fs.mkdir(dir, { recursive: true });
-  const agentPath = path.join(dir, 'agent.md');
-  const progressPath = path.join(dir, 'progress.md');
-  try { await fs.access(agentPath); } catch { await fs.writeFile(agentPath, agent, 'utf8'); }
-  try { await fs.access(progressPath); } catch { await fs.writeFile(progressPath, progress, 'utf8'); }
-  return { name };
-}
-
-async function removeProject(name) {
-  if (!validateProjectName(name)) throw new Error('Invalid project name');
-  const dir = projectDir(name);
-  await fs.rm(dir, { recursive: true, force: true });
-}
-
-async function renameProject(oldName, newName) {
-  if (!validateProjectName(oldName) || !validateProjectName(newName)) throw new Error('Invalid project name');
-  const oldDir = projectDir(oldName);
-  const newDir = projectDir(newName);
-  await fs.rename(oldDir, newDir);
-  return { name: newName };
-}
-
-async function readDoc(name, which) {
-  if (!validateProjectName(name)) throw new Error('Invalid project name');
-  const dir = projectDir(name);
-  const file = which === 'agent' ? 'agent.md' : 'progress.md';
-  const filePath = path.join(dir, file);
-  return await fs.readFile(filePath, 'utf8');
-}
-
-async function writeDoc(name, which, content) {
-  if (!validateProjectName(name)) throw new Error('Invalid project name');
-  const dir = projectDir(name);
-  await fs.mkdir(dir, { recursive: true });
-  const file = which === 'agent' ? 'agent.md' : 'progress.md';
-  const filePath = path.join(dir, file);
-  await fs.writeFile(filePath, String(content ?? ''), 'utf8');
+// DB-backed project and file operations (per-user)
+function userOps(userId) {
+  return {
+    async listProjects() {
+      return dbListProjects(userId);
+    },
+    async initProject(name, { agent = defaultAgentMd(name), progress = defaultProgressMd() } = {}) {
+      if (!validateProjectName(name)) throw new Error('Invalid project name');
+      const agentJson = JSON.stringify({ content: agent });
+      const progressJson = JSON.stringify({ content: progress });
+      return dbInitProject(userId, name, { agentJson, progressJson });
+    },
+    async removeProject(name) {
+      if (!validateProjectName(name)) throw new Error('Invalid project name');
+      await dbDeleteProject(userId, name);
+    },
+    async renameProject(oldName, newName) {
+      if (!validateProjectName(oldName) || !validateProjectName(newName)) throw new Error('Invalid project name');
+      return dbRenameProject(userId, oldName, newName);
+    },
+    async readDoc(name, which) {
+      if (!validateProjectName(name)) throw new Error('Invalid project name');
+      return dbReadDoc(userId, name, which);
+    },
+    async writeDoc(name, which, content) {
+      if (!validateProjectName(name)) throw new Error('Invalid project name');
+      await dbWriteDoc(userId, name, which, content);
+    },
+  };
 }
 
 // -------- Progress helpers --------
@@ -109,22 +89,19 @@ function formatProgressLine(state, text) {
   return `- ${marker} ${text}`;
 }
 
-async function progressAddItem(projectName, itemText) {
+async function progressAddItem(projectName, itemText, ops) {
   if (!validateProjectName(projectName)) throw new Error('Invalid project name');
   if (!itemText || typeof itemText !== 'string') throw new Error('item text required');
-  const dir = projectDir(projectName);
-  await fs.mkdir(dir, { recursive: true });
-  const filePath = path.join(dir, 'progress.md');
   let content = '';
   try {
-    content = await fs.readFile(filePath, 'utf8');
+    content = await ops.readDoc(projectName, 'progress');
   } catch {
     content = defaultProgressMd();
   }
   const endsWithNewline = content.endsWith('\n');
   const addition = formatProgressLine('pending', itemText);
   const updated = content + (endsWithWith(content, '\n\n') ? '' : endsWithNewline ? '' : '\n') + addition + '\n';
-  await fs.writeFile(filePath, updated, 'utf8');
+  await ops.writeDoc(projectName, 'progress', updated);
   return { added: itemText };
 }
 
@@ -132,16 +109,15 @@ function endsWithWith(s, suffix) {
   return s.endsWith(suffix);
 }
 
-async function progressSetState(projectName, opts) {
+async function progressSetState(projectName, opts, ops) {
   const { index, match, state } = opts || {};
   if (!validateProjectName(projectName)) throw new Error('Invalid project name');
   if (!['pending', 'in_progress', 'completed'].includes(state)) throw new Error('invalid state');
   if (index == null && (!match || typeof match !== 'string')) throw new Error('index or match required');
 
-  const filePath = path.join(projectDir(projectName), 'progress.md');
   let content = '';
   try {
-    content = await fs.readFile(filePath, 'utf8');
+    content = await ops.readDoc(projectName, 'progress');
   } catch {
     throw new Error('progress.md not found');
   }
@@ -164,7 +140,7 @@ async function progressSetState(projectName, opts) {
 
   if (changedAt === -1) throw new Error('no matching progress item');
   const updated = lines.join('\n');
-  await fs.writeFile(filePath, updated, 'utf8');
+  await ops.writeDoc(projectName, 'progress', updated);
   return { index: changedAt, state };
 }
 
@@ -177,7 +153,8 @@ function defaultProgressMd() {
 }
 
 // Build a fresh MCP server instance for each request (stateless mode)
-function buildMcpServer() {
+function buildMcpServer(userId) {
+  const ops = userOps(userId);
   const server = new Server(
     { name: 'mcp-http-agent-md', version: '0.0.1' },
     { capabilities: { tools: {} } }
@@ -306,57 +283,57 @@ function buildMcpServer() {
 
     switch (name) {
       case 'list_projects': {
-        const projects = await listProjects();
+        const projects = await ops.listProjects();
         return okText(JSON.stringify({ projects }));
       }
       case 'init_project': {
         const { name: projName, agent, progress } = args || {};
-        const result = await initProject(projName, { agent, progress });
+        const result = await ops.initProject(projName, { agent, progress });
         return okText(JSON.stringify(result));
       }
       case 'delete_project': {
         const { name: projName } = args || {};
-        await removeProject(projName);
+        await ops.removeProject(projName);
         return okText('deleted');
       }
       case 'rename_project': {
         const { oldName, newName } = args || {};
-        const result = await renameProject(oldName, newName);
+        const result = await ops.renameProject(oldName, newName);
         return okText(JSON.stringify(result));
       }
       case 'read_agent': {
         const { name: projName } = args || {};
-        const content = await readDoc(projName, 'agent');
+        const content = await ops.readDoc(projName, 'agent');
         return okText(content);
       }
       case 'write_agent': {
         const { name: projName, content } = args || {};
-        await writeDoc(projName, 'agent', content);
+        await ops.writeDoc(projName, 'agent', content);
         return okText('ok');
       }
       case 'read_progress': {
         const { name: projName } = args || {};
-        const content = await readDoc(projName, 'progress');
+        const content = await ops.readDoc(projName, 'progress');
         return okText(content);
       }
       case 'write_progress': {
         const { name: projName, content } = args || {};
-        await writeDoc(projName, 'progress', content);
+        await ops.writeDoc(projName, 'progress', content);
         return okText('ok');
       }
       case 'progress_add': {
         const { name: projName, item } = args || {};
-        const result = await progressAddItem(projName, item);
+        const result = await progressAddItem(projName, item, ops);
         return okText(JSON.stringify(result));
       }
       case 'progress_set_state': {
         const { name: projName, index, match, state } = args || {};
-        const result = await progressSetState(projName, { index, match, state });
+        const result = await progressSetState(projName, { index, match, state }, ops);
         return okText(JSON.stringify(result));
       }
       case 'progress_mark_complete': {
         const { name: projName, index, match } = args || {};
-        const result = await progressSetState(projName, { index, match, state: 'completed' });
+        const result = await progressSetState(projName, { index, match, state: 'completed' }, ops);
         return okText(JSON.stringify(result));
       }
       default:
@@ -369,22 +346,27 @@ function buildMcpServer() {
 
 // Express app for Streamable HTTP transport (stateless mode)
 const app = express();
-app.use(cors({ origin: '*', exposedHeaders: ['Mcp-Session-Id'], allowedHeaders: ['Content-Type', 'mcp-session-id'] }));
+app.use(cors({
+  origin: '*',
+  exposedHeaders: ['Mcp-Session-Id'],
+  allowedHeaders: ['Content-Type', 'mcp-session-id', 'Authorization']
+}));
 app.use(express.json({ limit: '2mb' }));
 
-// POST /mcp handles MCP JSON-RPC requests via Streamable HTTP
-app.post(BASE_PATH, async (req, res) => {
-  try {
-    const server = buildMcpServer();
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+// handler inlined in route below to include user context
 
+// POST /mcp now requires apiKey via query or Bearer
+app.post(BASE_PATH, apiKeyQueryMiddleware, async (req, res) => {
+  if (req.user?.id) res.setHeader('X-User-Id', req.user.id);
+  // Rebuild server with user context
+  try {
+    const server = buildMcpServer(req.user?.id);
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       transport.close();
       server.close();
     });
-
     await server.connect(transport);
-    await ensureDataDir();
     await transport.handleRequest(req, res, req.body);
   } catch (error) {
     console.error('Error handling MCP request:', error);
@@ -406,16 +388,22 @@ app.delete(BASE_PATH, async (req, res) => {
   res.status(405).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null });
 });
 
+
 // Root info
 app.get('/', (req, res) => {
-  res.type('text/plain').send(`mcp-http-agent-md MCP server. POST ${BASE_PATH} for MCP JSON-RPC`);
+  res.type('text/plain').send(
+    `mcp-http-agent-md MCP server. POST ${BASE_PATH}?apiKey=... for MCP JSON-RPC.`
+  );
 });
+
+// Admin auth router under /auth (Bearer MAIN_API_KEY)
+app.use('/auth', buildAuthRouter());
 
 // Start server
 async function start() {
-  await ensureDataDir();
   app.listen(PORT, () => {
-    console.log(`MCP server listening on http://localhost:${PORT}${BASE_PATH}`);
+    console.log(`MCP server listening on http://localhost:${PORT}${BASE_PATH}?apiKey=XXXX`);
+    console.log(`Admin auth endpoint: http://localhost:${PORT}/auth (Bearer MAIN_API_KEY)`);
   });
 }
 

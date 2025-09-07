@@ -8,9 +8,10 @@ WORKDIR /app
 
 # Install dependencies first for better layer caching
 COPY package.json ./
+COPY example_agent_md.json ./
 
 # Install production deps (no lockfile provided; allow resolution)
-RUN pnpm install --prod --no-optional --frozen-lockfile=false
+RUN npm install --prod --no-optional --frozen-lockfile=false
 
 # Copy the rest of the application
 COPY . .

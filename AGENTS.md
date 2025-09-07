@@ -11,6 +11,18 @@ This is an MCP (Model Context Protocol) server exposed over Streamable HTTP for 
 - Run dev server: `pnpm dev` (nodemon + MCP Streamable HTTP at `POST http://localhost:3000/mcp`)
 - Run in production: `pnpm start`
 
+## Docker
+
+- Build image: `docker build -t mcp-http-agent-md .`
+- Run container: `docker run -it --rm -p 3000:3000 -e MAIN_API_KEY=change-me -e HOST=0.0.0.0 -v $(pwd)/data:/app/data mcp-http-agent-md`
+- MCP endpoint: `POST http://localhost:3000/mcp?apiKey=YOUR_USER_API_KEY`
+- Admin API: `http://localhost:3000/auth` (Bearer `MAIN_API_KEY`)
+
+Notes:
+- The Docker image exposes `3000` and sets `HOST=0.0.0.0` so it’s reachable.
+- The SQLite-backed data directory is persisted at `/app/data`; the run example mounts `./data` as a volume.
+- You can still run locally with `npm run start` or `pnpm start`.
+
 ## Architecture
 
 The project structure is minimal:

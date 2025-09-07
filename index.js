@@ -177,6 +177,7 @@ function filterProgressContent(md, only) {
 function applyUnifiedDiff(oldText, diffText) {
   const oldLines = String(oldText ?? '').split(/\n/);
   const diffLines = String(diffText ?? '').split(/\n/);
+  const noCR = (s) => String(s ?? '').replace(/\r$/, '');
   // Collect hunks
   const hunks = [];
   let i = 0;
@@ -187,7 +188,7 @@ function applyUnifiedDiff(oldText, diffText) {
       i++;
       continue;
     }
-    const m = line.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+    const m = line.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@.*$/);
     if (m) {
       const oldStart = parseInt(m[1], 10);
       const oldCount = m[2] ? parseInt(m[2], 10) : 1;
@@ -195,9 +196,11 @@ function applyUnifiedDiff(oldText, diffText) {
       const newCount = m[4] ? parseInt(m[4], 10) : 1;
       i++;
       const hunkLines = [];
-      while (i < diffLines.length && !diffLines[i].startsWith('@@ ')) {
+      while (i < diffLines.length && !/^@@/.test(diffLines[i])) {
         const hl = diffLines[i];
         if (/^(diff --git |index |--- |\+\+\+ )/.test(hl)) break;
+        // Ignore end-of-file marker lines
+        if (/^\\ No newline at end of file/.test(hl)) { i++; continue; }
         // Only accept proper hunk lines starting with ' ', '+', or '-'.
         // Ignore other metadata and blank lines.
         if (/^[ \+\-]/.test(hl)) {
@@ -223,7 +226,7 @@ function applyUnifiedDiff(oldText, diffText) {
     const targetOldIndex = Math.max(0, h.oldStart - 1);
     // Copy unchanged lines up to hunk start
     while (origIndex < targetOldIndex) {
-      out.push(oldLines[origIndex] ?? '');
+      out.push(noCR(oldLines[origIndex]));
       origIndex++;
     }
     // Apply hunk
@@ -233,8 +236,8 @@ function applyUnifiedDiff(oldText, diffText) {
       const prefix = hl[0];
       const text = hl.slice(1);
       if (prefix === ' ') {
-        const got = oldLines[origIndex] ?? '';
-        if (got !== text) {
+        const got = noCR(oldLines[origIndex]);
+        if (got !== noCR(text)) {
           throw new Error(`Patch context mismatch: expected "${text}" got "${got}"`);
         }
         out.push(got);
@@ -242,14 +245,14 @@ function applyUnifiedDiff(oldText, diffText) {
         consumedFromOld++;
         addedToNew++;
       } else if (prefix === '-') {
-        const got = oldLines[origIndex] ?? '';
-        if (got !== text) {
+        const got = noCR(oldLines[origIndex]);
+        if (got !== noCR(text)) {
           throw new Error(`Patch delete mismatch: expected "${text}" got "${got}"`);
         }
         origIndex++;
         consumedFromOld++;
       } else if (prefix === '+') {
-        out.push(text);
+        out.push(noCR(text));
         addedToNew++;
       } else {
         // Unknown line prefix; be strict
@@ -260,7 +263,7 @@ function applyUnifiedDiff(oldText, diffText) {
   }
   // Append remaining original lines after last hunk
   while (origIndex < oldLines.length) {
-    out.push(oldLines[origIndex] ?? '');
+    out.push(noCR(oldLines[origIndex]));
     origIndex++;
   }
   return out.join('\n');
@@ -423,7 +426,20 @@ async function loadAgentExamplesJson() {
 function normalizeOnlyList(only) {
   if (only == null) return [];
   if (Array.isArray(only)) return only.map(String).map(s => s.trim()).filter(Boolean);
-  return [String(only).trim()].filter(Boolean);
+  // Accept JSON list passed as string (e.g., "[\"a\",\"b\"]")
+  if (typeof only === 'string') {
+    const s = only.trim();
+    if (s.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(s);
+        if (Array.isArray(parsed)) {
+          return parsed.map(String).map(v => v.trim()).filter(Boolean);
+        }
+      } catch {}
+    }
+    return [s].filter(Boolean);
+  }
+  return [];
 }
 
 function filterExamplesByOnly(examples, onlyList) {
@@ -451,8 +467,8 @@ function buildMcpServer(userId) {
     const examplesToolDesc = [
       'Get AGENTS.md examples from example_agent_md.json.',
       available.length ? `Available examples: ${available.join('; ')}` : 'No examples found.',
-      "Optional 'only' filters by usecase/title (string or list).",
-      "Always includes 'the_art_of_writing_agents_md'."
+      "Filter with 'only' by usecase/title (string or list). If 'only' is a JSON string list (e.g., [\"studying_a_subject\",\"exam_review\"]), it is parsed as an array.",
+      "Response always includes top-level 'the_art_of_writing_agents_md' (not filtered)."
     ].join(' ');
 
     return { tools: [
@@ -543,7 +559,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'write_agent',
-        description: 'Write AGENTS.md for a project. Supports full replace or unified diff patch via optional mode.',
+        description: 'Write AGENTS.md (mode=full|patch|diff). For patch/diff, provide a unified diff string: use hunk headers like @@ -l,c +l,c @@ and lines prefixed with space (context), + (add), - (delete). If deleting a markdown list item that starts with "- ", the diff line must start with "-- " (delete marker + literal dash). Lines must preserve leading spaces in context.',
         inputSchema: {
           type: 'object',
           properties: {

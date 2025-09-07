@@ -74,15 +74,19 @@ async function run() {
     const badWrite = await client.callTool({ name: 'write_agent', arguments: { name: '__no_such_project__', content: 'x' } });
     const badPayload = JSON.parse(badWrite.content?.[0]?.text || '{}');
     assert(badPayload.error === 'project_not_found', 'write_agent should error for non-existent project');
+    // Also ensure state updates error when project does not exist
+    const badState = await client.callTool({ name: 'progress_set_new_state', arguments: { name: '__no_such_project__', match: ['ffffffff'], state: 'completed' } });
+    const badStatePayload = JSON.parse(badState.content?.[0]?.text || '{}');
+    assert(badStatePayload.error === 'project_not_found', 'progress_set_new_state should error for non-existent project');
 
     // 1) tools/list
     const list = await client.listTools({});
     const toolNames = (list.tools || []).map(t => t.name).sort();
     const expected = [
       'list_projects','init_project','delete_project','rename_project',
-      'read_agent','write_agent','read_progress','write_progress',
+      'read_agent','write_agent','read_progress',
       'progress_add','progress_set_new_state',
-      'get_agents_md_examples'
+      'get_agents_md_best_practices_and_examples','generate_task_ids'
     ];
     for (const n of expected) assert(toolNames.includes(n), `Missing tool: ${n}`);
 
@@ -144,6 +148,11 @@ async function run() {
     const addTasks = JSON.parse(addTasksRes.content?.[0]?.text || '{}');
     assert(Array.isArray(addTasks.added) && addTasks.added.length === 3, 'Should add three tasks');
 
+    // Attempt to update non-existent task should error
+    const noMatch = await client.callTool({ name: 'progress_set_new_state', arguments: { name, match: ['zzzzzzzz'], state: 'completed' } });
+    const noMatchPayload = JSON.parse(noMatch.content?.[0]?.text || '{}');
+    assert(noMatchPayload.error === 'task_not_found', 'Should error when no matching tasks found');
+
     // 6) read_progress returns JSON tasks and filter by status
     let readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
     let tasksPayload = JSON.parse(readProgress.content?.[0]?.text || '{}');
@@ -161,37 +170,29 @@ async function run() {
     const onlyDoneJson = JSON.parse(onlyDone.content?.[0]?.text || '{}');
     assert(onlyDoneJson.tasks.every(t => t.status === 'completed'), 'Filter done should include only completed');
 
-    // 7) mark complete by id via progress_set_new_state (array input)
-    await client.callTool({ name: 'progress_set_new_state', arguments: { name, match: ['a1b2c3d4'], state: 'completed' } });
-    readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
-    tasksPayload = JSON.parse(readProgress.content?.[0]?.text || '{}');
-    const t1row = tasksPayload.tasks.find(t => t.task_id === 'a1b2c3d4');
-    assert(t1row && t1row.status === 'completed', 'a1b2c3d4 should be completed');
-
-    // 8) progress_add duplicate should report exists (array input)
+    // 7) progress_add duplicate should report skipped list
     const dupRes = await client.callTool({ name: 'progress_add', arguments: { name, item: [{ task_id: 'c3d4e5f6', task_info: 'third-dup' }] } });
     const dup = JSON.parse(dupRes.content?.[0]?.text || '{}');
-    assert(Array.isArray(dup.skipped) && dup.skipped.includes('c3d4e5f6'), 'Duplicate add should report id in skipped');
+    assert(Array.isArray(dup.skipped) && dup.skipped.includes('c3d4e5f6'), 'Duplicate add should indicate skipped id');
 
-    // 9) progress_set_new_state with list (one id and one non-matching id)
+    // 8) progress_set_new_state with list (one id and one non-matching id)
     const setRes = await client.callTool({ name: 'progress_set_new_state', arguments: { name, match: ['b2c3d4e5', 'ffffffff'], state: 'completed' } });
     const setPayload = JSON.parse(setRes.content?.[0]?.text || '{}');
     assert(Array.isArray(setPayload.changed) && setPayload.changed.includes('b2c3d4e5'), 'Should change b2c3d4e5');
     assert(Array.isArray(setPayload.notMatched) && setPayload.notMatched.includes('ffffffff'), 'Should report notMatched');
 
-    // 9.4) write_progress replace with structured tasks on a new project
+    // 9.4) progress_add structured tasks on a new project
     const name3 = `${name}_arr`;
     await client.callTool({ name: 'init_project', arguments: { name: name3 } });
     const tA = { task_id: 'abcd1234', task_info: 'A' };
     const tB = { task_id: 'bcde2345', task_info: 'B', parent_id: 'abcd1234' };
-    const wr = await client.callTool({ name: 'write_progress', arguments: { name: name3, content: [tA, tB] } });
+    const wr = await client.callTool({ name: 'progress_add', arguments: { name: name3, item: [tA, tB] } });
     const wrPayload = JSON.parse(wr.content?.[0]?.text || '{}');
-    assert(Array.isArray(wrPayload.added) && wrPayload.added.length === 2, 'write_progress should add two tasks');
+    assert(Array.isArray(wrPayload.added) && wrPayload.added.length === 2, 'progress_add should add two tasks');
     const rp3 = await client.callTool({ name: 'read_progress', arguments: { name: name3 } });
     const pt3 = JSON.parse(rp3.content?.[0]?.text || '{}');
     const ids3 = pt3.tasks.map(t => t.task_id);
     assert(ids3.includes('abcd1234') && ids3.includes('bcde2345'), 'read_progress should list tasks we wrote');
-    assert(typeof pt3.markdown === 'string' && pt3.markdown.includes('- [ ] A (abcd1234)'), 'markdown should render pending A with id');
 
     // 13) Update fields via progress_set_new_state: change task_info and extra_note of bcde2345
     const updRes = await client.callTool({ name: 'progress_set_new_state', arguments: { name: name3, match: ['bcde2345'], state: 'in_progress', task_info: 'B updated', extra_note: 'note' } });
@@ -208,18 +209,10 @@ async function run() {
     const p5 = JSON.parse(rp5.content?.[0]?.text || '{}');
     const ids5 = p5.tasks.map(t => t.task_id);
     assert(!ids5.includes('abcd1234') && !ids5.includes('bcde2345'), 'Default read excludes archived');
-    assert(!p5.markdown.includes('(abcd1234)') && !p5.markdown.includes('(bcde2345)'), 'markdown should exclude archived by default');
     const rp5arch = await client.callTool({ name: 'read_progress', arguments: { name: name3, only: 'archived' } });
     const p5a = JSON.parse(rp5arch.content?.[0]?.text || '{}');
     const ids5a = p5a.tasks.map(t => t.task_id);
     assert(ids5a.includes('abcd1234') && ids5a.includes('bcde2345'), 'Archived filter shows archived tasks including children');
-    assert(p5a.markdown.includes('- [A] A (abcd1234)'), 'markdown should show archived with [A]');
-
-    // 14.1) Mixed filter including archived should include archived too
-    const rp5mix = await client.callTool({ name: 'read_progress', arguments: { name: name3, only: ['archived','in_progress'] } });
-    const p5m = JSON.parse(rp5mix.content?.[0]?.text || '{}');
-    const ids5m = new Set((p5m.tasks || []).map(t => t.task_id));
-    assert(ids5m.has('abcd1234') && ids5m.has('bcde2345'), 'Mixed filter should include archived when requested');
 
     // 15) Completed cascades to children recursively
     const name4 = `${name}_cascade_complete`;
@@ -297,8 +290,15 @@ async function run() {
     const projectsList3 = JSON.parse(list4.content?.[0]?.text || '{}').projects || [];
     assert(!projectsList3.includes(name2), 'delete_project should remove the project');
 
-    // 13) get_agents_md_examples returns philosophy example and always includes the art field
-    const ex1Res = await client.callTool({ name: 'get_agents_md_examples', arguments: { only: 'philosophy' } });
+    // 13) Best practices only by default, and include filters
+    // Default (no include) should return only best-practices and no examples
+    const ex0Res = await client.callTool({ name: 'get_agents_md_best_practices_and_examples', arguments: {} });
+    const ex0 = JSON.parse(ex0Res.content?.[0]?.text || '{}');
+    assert(typeof ex0.the_art_of_writing_agents_md === 'string' && ex0.the_art_of_writing_agents_md.length > 0, 'Should include the_art_of_writing_agents_md');
+    assert(Array.isArray(ex0.examples) && ex0.examples.length === 0, 'Default should return no examples');
+
+    // Filter by include
+    const ex1Res = await client.callTool({ name: 'get_agents_md_best_practices_and_examples', arguments: { include: 'philosophy' } });
     const ex1 = JSON.parse(ex1Res.content?.[0]?.text || '{}');
     assert(typeof ex1.the_art_of_writing_agents_md === 'string' && ex1.the_art_of_writing_agents_md.length > 0, 'Should include the_art_of_writing_agents_md');
     assert(Array.isArray(ex1.examples), 'examples should be an array');
@@ -307,7 +307,7 @@ async function run() {
       assert(allMatch, 'Filtered examples should relate to philosophy');
     }
     // Also test list input for only
-    const ex2Res = await client.callTool({ name: 'get_agents_md_examples', arguments: { only: ['philosophy'] } });
+    const ex2Res = await client.callTool({ name: 'get_agents_md_best_practices_and_examples', arguments: { include: ['philosophy'] } });
     const ex2 = JSON.parse(ex2Res.content?.[0]?.text || '{}');
     assert(typeof ex2.the_art_of_writing_agents_md === 'string' && ex2.the_art_of_writing_agents_md.length > 0, 'List filter should also include art field');
 

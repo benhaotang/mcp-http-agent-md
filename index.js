@@ -522,12 +522,12 @@ async function loadAgentExamplesJson() {
   }
 }
 
-function normalizeOnlyList(only) {
-  if (only == null) return [];
-  if (Array.isArray(only)) return only.map(String).map(s => s.trim()).filter(Boolean);
+function normalizeIncludeList(include) {
+  if (include == null) return [];
+  if (Array.isArray(include)) return include.map(String).map(s => s.trim()).filter(Boolean);
   // Accept JSON list passed as string (e.g., "[\"a\",\"b\"]")
-  if (typeof only === 'string') {
-    const s = only.trim();
+  if (typeof include === 'string') {
+    const s = include.trim();
     if (s.startsWith('[')) {
       try {
         const parsed = JSON.parse(s);
@@ -541,9 +541,9 @@ function normalizeOnlyList(only) {
   return [];
 }
 
-function filterExamplesByOnly(examples, onlyList) {
-  if (!onlyList.length) return examples;
-  const needles = onlyList.map(s => s.toLowerCase());
+function filterExamplesByInclude(examples, includeList) {
+  if (!includeList.length) return [];
+  const needles = includeList.map(s => s.toLowerCase());
   return examples.filter(ex => {
     const u = String(ex.usecase || '').toLowerCase();
     const t = String(ex.title || '').toLowerCase();
@@ -591,14 +591,15 @@ function buildMcpServer(userId) {
 
   // Describe available tools
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const agentsReminder = 'Reminder: Proactively update AGENTS.md to capture new project knowledge and evolving user preferences. Call get_agents_md_best_practices_and_examples to learn more.';
     const { examples } = await loadAgentExamplesJson();
     const available = examples.map(ex => `${ex.usecase || ''}${ex.title ? ` - ${ex.title}` : ''}`.trim()).filter(Boolean);
     const examplesToolDesc = [
-      'Get AGENTS.md examples from example_agent_md.json.',
+      'Best practices and examples for AGENTS.md from example_agent_md.json.',
       available.length ? `Available examples: ${available.join('; ')}` : 'No examples found.',
-      "Filter with 'only' by usecase/title (string or list). If 'only' is a JSON string list (e.g., [\"studying_a_subject\",\"exam_review\"]), it is parsed as an array.",
-      "Response always includes top-level 'the_art_of_writing_agents_md' (not filtered)."
-    ].join(' ');
+      "Use 'include' to control examples: include='all' returns all examples; include can also be a string or a JSON/array of filters matching usecase/title.",
+      "Default returns only 'the_art_of_writing_agents_md' (best-practices)."
+    ].join(' ') + ' ' + agentsReminder;
 
     return { tools: [
       {
@@ -618,7 +619,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'progress_add',
-        description: 'Add one or more structured tasks. Provide an array of task objects. Each requires 8-char task_id (lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note.',
+        description: 'Add one or more structured tasks. Provide an array of task objects. Each requires 8-char task_id (lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -642,7 +643,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'progress_set_new_state',
-        description: 'Update tasks by task_id (8-char) or by matching task_info substring. Provide an array of match terms (ids or substrings). Can set state (pending|in_progress|completed|archived) and/or update fields task_info, parent_id, extra_note. Archiving or completing cascades to all children recursively. Lock rules: when a task or any ancestor is completed/archived, no edits are allowed except unlocking the task itself to pending/in_progress, and only if no ancestor is locked.',
+        description: 'Update tasks by task_id (8-char) or by matching task_info substring. Provide an array of match terms (ids or substrings). Can set state (pending|in_progress|completed|archived) and/or update fields task_info, parent_id, extra_note. Archiving or completing cascades to all children recursively. Lock rules: when a task or any ancestor is completed/archived, no edits are allowed except unlocking the task itself to pending/in_progress, and only if no ancestor is locked. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -659,7 +660,7 @@ function buildMcpServer(userId) {
       
       {
         name: 'init_project',
-        description: 'Create or initialize a project with optional agent content and structured tasks. Task IDs must be exactly 8 lowercase a-z0-9 (e.g., abcd1234). Use parent_id to reference the root task for nesting.',
+        description: 'Create or initialize a project with optional agent content and structured tasks. Task IDs must be exactly 8 lowercase a-z0-9 (e.g., abcd1234). Use parent_id to reference the root task for nesting. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -691,7 +692,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'rename_project',
-        description: 'Rename a project',
+        description: 'Rename a project. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -703,7 +704,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'read_agent',
-        description: 'Read AGENTS.md for a project. Optional: prepend line numbers with N|',
+        description: 'Read AGENTS.md for a project. Optional: prepend line numbers with N|. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -715,7 +716,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'write_agent',
-        description: 'Write AGENTS.md (mode=full|patch|diff). For patch/diff, provide a unified diff string: use hunk headers like @@ -l,c +l,c @@ and lines prefixed with space (context), + (add), - (delete). If deleting a markdown list item that starts with "- ", the diff line must start with "-- " (delete marker + literal dash). Lines must preserve leading spaces in context.',
+        description: 'Write AGENTS.md (mode=full|patch|diff). For patch/diff, provide a unified diff string: use hunk headers like @@ -l,c +l,c @@ and lines prefixed with space (context), + (add), - (delete). If deleting a markdown list item that starts with "- ", the diff line must start with "-- " (delete marker + literal dash). Lines must preserve leading spaces in context. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -729,7 +730,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'read_progress',
-        description: 'Read structured tasks as JSON. Optionally filter by status (pending, in_progress, completed) or synonyms.',
+        description: 'Read structured tasks as JSON. Optionally filter by status (pending, in_progress, completed) or synonyms. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -745,37 +746,12 @@ function buildMcpServer(userId) {
         }
       },
       {
-        name: 'write_progress',
-        description: 'Replace or add structured tasks. Provide array of tasks; set mode=replace to overwrite all (default), or mode=add to add-only. Use parent_id to point to the root task to nest arbitrarily deep. Status accepts pending|in_progress|completed|archived.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            name: { type: 'string' },
-            mode: { type: 'string', enum: ['replace','add'] },
-            content: {
-              type: 'array', items: {
-                type: 'object',
-                properties: {
-                  task_id: { type: 'string', minLength: 8, maxLength: 8 },
-                  task_info: { type: 'string' },
-                  parent_id: { type: 'string', minLength: 8, maxLength: 8, description: 'Root task_id this task belongs under; enables arbitrary-depth nesting.' },
-                  status: { type: 'string', enum: ['pending','in_progress','completed','archived'] },
-                  extra_note: { type: 'string' }
-                },
-                required: ['task_id','task_info']
-              }
-            }
-          },
-          required: ['name','content']
-        }
-      },
-      {
-        name: 'get_agents_md_examples',
+        name: 'get_agents_md_best_practices_and_examples',
         description: examplesToolDesc,
         inputSchema: {
           type: 'object',
           properties: {
-            only: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
+            include: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
           }
         }
       }
@@ -878,37 +854,24 @@ function buildMcpServer(userId) {
           return okText(JSON.stringify({ error: code, message: msg }));
         }
       }
-      case 'write_progress': {
-        const { name: projName, content, mode } = args || {};
-        try {
-          const { tasks, invalid } = validateAndNormalizeTasks(content);
-          if (!Array.isArray(content)) {
-            // content must be an array of task objects
-            return okText(JSON.stringify({ error: 'invalid_request', message: 'content must be an array of task objects', invalid }));
-          }
-          const action = (String(mode || 'replace').toLowerCase() === 'add') ? 'add' : 'replace';
-          const res = action === 'replace' ? await dbReplaceTasks(userId, projName, tasks) : await dbAddTasks(userId, projName, tasks);
-          return okText(JSON.stringify({ status: 'ok', mode: action, added: res.added, exists: res.exists, invalid }));
-        } catch (err) {
-          const msg = String(err?.message || err || 'write failed');
-          const code = /project not found/i.test(msg) ? 'project_not_found' : 'write_failed';
-          const payload = { error: code, message: msg };
-          if (code === 'project_not_found') payload.suggest = 'init_project';
-          return okText(JSON.stringify(payload));
-        }
-      }
-      case 'get_agents_md_examples': {
-        const { only } = args || {};
+      
+      case 'get_agents_md_best_practices_and_examples': {
+        const { include } = args || {};
         const { theArt, examples, rawParsed } = await loadAgentExamplesJson();
         if (!rawParsed) {
           return okText(JSON.stringify({ error: 'examples_file_not_found', message: 'example_agent_md.json not found or invalid', the_art_of_writing_agents_md: '', examples: [] }));
         }
-        const onlyList = normalizeOnlyList(only);
-        const filtered = filterExamplesByOnly(examples, onlyList);
-        const result = {
-          the_art_of_writing_agents_md: theArt,
-          examples: filtered
-        };
+        const includeList = normalizeIncludeList(include);
+        // Default: only best-practices
+        let result = { the_art_of_writing_agents_md: theArt, examples: [] };
+        // If include contains 'all', return all examples
+        const wantsAll = includeList.map(s => s.toLowerCase()).includes('all');
+        if (wantsAll) {
+          result = { the_art_of_writing_agents_md: theArt, examples };
+        } else if (includeList.length) {
+          const filtered = filterExamplesByInclude(examples, includeList);
+          result = { the_art_of_writing_agents_md: theArt, examples: filtered };
+        }
         return okText(JSON.stringify(result));
       }
       case 'progress_add': {
@@ -970,6 +933,9 @@ function buildMcpServer(userId) {
           const terms = matchList.filter(s => !validateTaskId(s));
           const res = await dbSetTasksState(userId, projName, { matchIds: ids, matchText: terms, state: normalizedState, task_info, parent_id, extra_note });
           if (res.changedIds.length === 0) {
+            if ((res.notMatched?.length || 0) > 0 && (res.forbidden?.length || 0) === 0) {
+              return okText(JSON.stringify({ error: 'task_not_found', message: 'No matching tasks found for provided match terms', notMatched: res.notMatched }));
+            }
             return okText(JSON.stringify({ changed: [], state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, notice: 'No items changed. Items may be locked or list changed. Pull updated list?', suggest: 'read_progress' }));
           }
           return okText(JSON.stringify({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden }));

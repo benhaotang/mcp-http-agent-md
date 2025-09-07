@@ -39,7 +39,9 @@ function userOps(userId) {
     async initProject(name, { agent = defaultAgentMd(name), progress = defaultProgressMd() } = {}) {
       if (!validateProjectName(name)) throw new Error('Invalid project name');
       const agentJson = JSON.stringify({ content: agent });
-      const progressJson = JSON.stringify({ content: progress });
+      // Allow initializing progress from a JSON list (bulk)
+      const progressText = coerceProgressContent(progress);
+      const progressJson = JSON.stringify({ content: progressText });
       return dbInitProject(userId, name, { agentJson, progressJson });
     },
     async removeProject(name) {
@@ -62,6 +64,31 @@ function userOps(userId) {
 }
 
 // -------- Progress helpers --------
+function coerceJsonArray(input) {
+  if (Array.isArray(input)) return input;
+  if (typeof input === 'string') {
+    const s = input.trim();
+    if (s.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(s);
+        if (Array.isArray(parsed)) return parsed;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+function coerceProgressContent(content) {
+  // Accept either raw markdown string or a JSON array of strings
+  const arr = coerceJsonArray(content);
+  if (arr) {
+    const lines = arr
+      .filter(v => typeof v === 'string' && v.trim().length > 0)
+      .map(v => formatProgressLine('pending', v.trim()));
+    return lines.join('\n') + (lines.length ? '\n' : '');
+  }
+  return String(content ?? '');
+}
 function parseProgressLine(line) {
   // Returns { isItem, state, text }
   const m = line.match(/^\s*-\s*\[(.|\s)\]\s*(.*)$/);
@@ -89,6 +116,42 @@ function formatProgressLine(state, text) {
   return `- ${marker} ${text}`;
 }
 
+function normalizeStateFilter(val) {
+  const v = String(val || '').toLowerCase().trim();
+  if (['todo', 'to-do', 'pending', 'not_started', 'not-started', 'open'].includes(v)) return 'pending';
+  if (['in_progress', 'in-progress', 'doing', 'wip'].includes(v)) return 'in_progress';
+  if (['done', 'completed', 'complete', 'closed'].includes(v)) return 'completed';
+  return null;
+}
+
+function filterProgressContent(md, only) {
+  const list = Array.isArray(only) ? only : (only == null ? [] : [only]);
+  const wanted = new Set(list.map(normalizeStateFilter).filter(Boolean));
+  if (!wanted.size) return String(md ?? '');
+  const out = [];
+  const lines = String(md || '').split(/\r?\n/);
+  for (const line of lines) {
+    const p = parseProgressLine(line);
+    if (!p.isItem) continue;
+    if (wanted.has(p.state)) out.push(formatProgressLine(p.state, p.text));
+  }
+  return out.join('\n') + (out.length ? '\n' : '');
+}
+
+function normalizeTaskText(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+function extractExistingTasks(mdContent) {
+  const set = new Set();
+  const lines = String(mdContent || '').split(/\r?\n/);
+  for (const line of lines) {
+    const p = parseProgressLine(line);
+    if (p.isItem && p.text) set.add(normalizeTaskText(p.text));
+  }
+  return set;
+}
+
 async function progressAddItem(projectName, itemText, ops) {
   if (!validateProjectName(projectName)) throw new Error('Invalid project name');
   if (!itemText || typeof itemText !== 'string') throw new Error('item text required');
@@ -98,6 +161,11 @@ async function progressAddItem(projectName, itemText, ops) {
   } catch {
     content = defaultProgressMd();
   }
+  const existing = extractExistingTasks(content);
+  const norm = normalizeTaskText(itemText);
+  if (existing.has(norm)) {
+    return { added: null, exists: true, item: itemText, notice: 'Task already exists. Not added.' };
+  }
   const endsWithNewline = content.endsWith('\n');
   const addition = formatProgressLine('pending', itemText);
   const updated = content + (endsWithWith(content, '\n\n') ? '' : endsWithNewline ? '' : '\n') + addition + '\n';
@@ -105,15 +173,53 @@ async function progressAddItem(projectName, itemText, ops) {
   return { added: itemText };
 }
 
+async function progressAddItems(projectName, items, ops) {
+  if (!validateProjectName(projectName)) throw new Error('Invalid project name');
+  const list = (items || []).filter(v => typeof v === 'string' && v.trim().length > 0);
+  if (!list.length) throw new Error('items array is empty');
+  let content = '';
+  try {
+    content = await ops.readDoc(projectName, 'progress');
+  } catch {
+    content = defaultProgressMd();
+  }
+  const existing = extractExistingTasks(content);
+  const seenInput = new Set();
+  const toAdd = [];
+  const skipped = [];
+  for (const raw of list) {
+    const norm = normalizeTaskText(raw);
+    if (!norm) continue;
+    if (seenInput.has(norm) || existing.has(norm)) {
+      skipped.push(raw);
+      continue;
+    }
+    seenInput.add(norm);
+    toAdd.push(raw.trim());
+  }
+  if (!toAdd.length) {
+    return { added: [], skipped, notice: 'No new tasks added. All provided tasks already exist or are duplicates.' };
+  }
+  const endsWithNewline = content.endsWith('\n');
+  const additions = toAdd.map(v => formatProgressLine('pending', v)).join('\n') + '\n';
+  const updated = content + (endsWithWith(content, '\n\n') ? '' : endsWithNewline ? '' : '\n') + additions;
+  await ops.writeDoc(projectName, 'progress', updated);
+  return { added: toAdd, skipped };
+}
+
 function endsWithWith(s, suffix) {
   return s.endsWith(suffix);
 }
 
 async function progressSetState(projectName, opts, ops) {
-  const { index, match, state } = opts || {};
+  const { match, state } = opts || {};
   if (!validateProjectName(projectName)) throw new Error('Invalid project name');
   if (!['pending', 'in_progress', 'completed'].includes(state)) throw new Error('invalid state');
-  if (index == null && (!match || typeof match !== 'string')) throw new Error('index or match required');
+  const maybeList = coerceJsonArray(match);
+  const matchList = (maybeList || (match == null ? [] : [match]))
+    .map(v => (typeof v === 'string' ? v.trim() : ''))
+    .filter(v => v.length > 0);
+  if (!matchList.length) throw new Error('match required');
 
   let content = '';
   try {
@@ -124,28 +230,47 @@ async function progressSetState(projectName, opts, ops) {
 
   const lines = content.split(/\r?\n/);
   let itemIdx = 0;
-  let changedAt = -1;
+  const changedSet = new Set();
+  const foundFlags = matchList.map(() => false);
+  const matchedByTerm = matchList.map(() => []);
   for (let i = 0; i < lines.length; i++) {
     const parsed = parseProgressLine(lines[i]);
     if (!parsed.isItem) continue;
     itemIdx++;
-    const matchesByIndex = index != null && itemIdx === Number(index);
-    const matchesByText = match && parsed.text.toLowerCase().includes(match.toLowerCase());
-    if (matchesByIndex || matchesByText) {
+    const lowerText = parsed.text.toLowerCase();
+    let matchedAny = false;
+    for (let t = 0; t < matchList.length; t++) {
+      const term = matchList[t];
+      if (lowerText.includes(term.toLowerCase())) {
+        foundFlags[t] = true;
+        matchedByTerm[t].push(itemIdx);
+        matchedAny = true;
+      }
+    }
+    if (matchedAny) {
       lines[i] = formatProgressLine(state, parsed.text);
-      changedAt = itemIdx;
-      break;
+      changedSet.add(itemIdx);
     }
   }
 
-  if (changedAt === -1) throw new Error('no matching progress item');
+  const changed = Array.from(changedSet.values());
+  const notMatched = matchList.filter((_, i) => !foundFlags[i]);
+  if (!changed.length) {
+    return {
+      changed: [],
+      state,
+      notMatched,
+      notice: 'No items matched by text. The list may have changed. Pull updated list again?',
+      suggest: 'read_progress'
+    };
+  }
   const updated = lines.join('\n');
   await ops.writeDoc(projectName, 'progress', updated);
-  return { index: changedAt, state };
+  return { changed, state, notMatched };
 }
 
 function defaultAgentMd(projectName) {
-  return `# agent.md\n\n- Project: ${projectName}\n- Purpose: Instructions for agents (style, best practices, personality)\n\nGuidance:\n- Keep responses concise, clear, and actionable.\n- Prefer safe defaults; avoid destructive actions.\n- Explain rationale briefly when ambiguity exists.\n`;
+  return `# AGENTS.md\n\n- Project: ${projectName}\n- Purpose: Instructions for agents (style, best practices, personality)\n\nGuidance:\n- Keep responses concise, clear, and actionable.\n- Prefer safe defaults; avoid destructive actions.\n- Explain rationale briefly when ambiguity exists.\n`;
 }
 
 function defaultProgressMd() {
@@ -170,34 +295,39 @@ function buildMcpServer(userId) {
       },
       {
         name: 'progress_add',
-        description: 'Append a new progress item to progress.md',
+        description: 'Append one or more progress items to progress.md (string or JSON list)',
         inputSchema: {
           type: 'object',
-          properties: { name: { type: 'string' }, item: { type: 'string' } },
+          properties: {
+            name: { type: 'string' },
+            item: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
+          },
           required: ['name', 'item']
         }
       },
       {
         name: 'progress_set_state',
-        description: 'Set state of a progress item by index or matching text',
+        description: 'Set state of one or more progress items by matching text only',
         inputSchema: {
           type: 'object',
           properties: {
             name: { type: 'string' },
-            index: { type: 'number' },
-            match: { type: 'string' },
+            match: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] },
             state: { type: 'string', enum: ['pending', 'in_progress', 'completed'] }
           },
-          required: ['name', 'state']
+          required: ['name', 'match', 'state']
         }
       },
       {
         name: 'progress_mark_complete',
-        description: 'Mark a progress item as completed by index or matching text',
+        description: 'Mark one or more progress items as completed by matching text only',
         inputSchema: {
           type: 'object',
-          properties: { name: { type: 'string' }, index: { type: 'number' }, match: { type: 'string' } },
-          required: ['name']
+          properties: {
+            name: { type: 'string' },
+            match: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
+          },
+          required: ['name', 'match']
         }
       },
       {
@@ -236,7 +366,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'read_agent',
-        description: 'Read agent.md for a project',
+        description: 'Read AGENTS.md for a project',
         inputSchema: {
           type: 'object',
           properties: { name: { type: 'string' } },
@@ -245,7 +375,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'write_agent',
-        description: 'Write agent.md for a project',
+        description: 'Write AGENTS.md for a project',
         inputSchema: {
           type: 'object',
           properties: { name: { type: 'string' }, content: { type: 'string' } },
@@ -254,19 +384,30 @@ function buildMcpServer(userId) {
       },
       {
         name: 'read_progress',
-        description: 'Read progress.md for a project',
+        description: 'Read progress.md for a project. Optionally filter by state (to-do, in-progress, done).',
         inputSchema: {
           type: 'object',
-          properties: { name: { type: 'string' } },
+          properties: {
+            name: { type: 'string' },
+            only: {
+              oneOf: [
+                { type: 'string', enum: ['todo', 'to-do', 'pending', 'in_progress', 'in-progress', 'done', 'completed'] },
+                { type: 'array', items: { type: 'string' } }
+              ]
+            }
+          },
           required: ['name']
         }
       },
       {
         name: 'write_progress',
-        description: 'Write progress.md for a project',
+        description: 'Write progress.md for a project. Accepts string or JSON list of items.',
         inputSchema: {
           type: 'object',
-          properties: { name: { type: 'string' }, content: { type: 'string' } },
+          properties: {
+            name: { type: 'string' },
+            content: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
+          },
           required: ['name', 'content']
         }
       }
@@ -312,28 +453,43 @@ function buildMcpServer(userId) {
         return okText('ok');
       }
       case 'read_progress': {
-        const { name: projName } = args || {};
+        const { name: projName, only } = args || {};
         const content = await ops.readDoc(projName, 'progress');
-        return okText(content);
+        const filtered = typeof only === 'undefined' ? content : filterProgressContent(content, only);
+        return okText(filtered);
       }
       case 'write_progress': {
         const { name: projName, content } = args || {};
-        await ops.writeDoc(projName, 'progress', content);
+        const coerced = coerceProgressContent(content);
+        await ops.writeDoc(projName, 'progress', coerced);
         return okText('ok');
       }
       case 'progress_add': {
         const { name: projName, item } = args || {};
-        const result = await progressAddItem(projName, item, ops);
-        return okText(JSON.stringify(result));
+        const arr = coerceJsonArray(item);
+        if (arr) {
+          const result = await progressAddItems(projName, arr, ops);
+          return okText(JSON.stringify(result));
+        } else {
+          const result = await progressAddItem(projName, String(item), ops);
+          return okText(JSON.stringify(result));
+        }
       }
       case 'progress_set_state': {
-        const { name: projName, index, match, state } = args || {};
-        const result = await progressSetState(projName, { index, match, state }, ops);
+        const { name: projName, match, state } = args || {};
+        const result = await progressSetState(projName, { match, state }, ops);
+        // If no matches, return a friendly prompt
+        if (result && Array.isArray(result.changed) && result.changed.length === 0 && result.notice) {
+          return okText(JSON.stringify(result));
+        }
         return okText(JSON.stringify(result));
       }
       case 'progress_mark_complete': {
-        const { name: projName, index, match } = args || {};
-        const result = await progressSetState(projName, { index, match, state: 'completed' }, ops);
+        const { name: projName, match } = args || {};
+        const result = await progressSetState(projName, { match, state: 'completed' }, ops);
+        if (result && Array.isArray(result.changed) && result.changed.length === 0 && result.notice) {
+          return okText(JSON.stringify(result));
+        }
         return okText(JSON.stringify(result));
       }
       default:

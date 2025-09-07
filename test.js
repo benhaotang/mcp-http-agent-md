@@ -111,8 +111,8 @@ async function run() {
     progressText = readProgress.content?.[0]?.text || '';
     assert(progressText.includes('- [ ] third'), 'progress_add should append pending item');
 
-    // 7) progress_set_state by index (set second to in_progress)
-    await client.callTool({ name: 'progress_set_state', arguments: { name, index: 2, state: 'in_progress' } });
+    // 7) progress_set_state by text match (set second to in_progress)
+    await client.callTool({ name: 'progress_set_state', arguments: { name, match: 'second', state: 'in_progress' } });
     readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
     progressText = readProgress.content?.[0]?.text || '';
     assert(/- \[~\] second/.test(progressText), 'Item 2 should be in_progress');
@@ -123,11 +123,52 @@ async function run() {
     progressText = readProgress.content?.[0]?.text || '';
     assert(/- \[x\] third/.test(progressText), 'Item matched by text should be completed');
 
-    // 9) progress_mark_complete by index (complete first)
-    await client.callTool({ name: 'progress_mark_complete', arguments: { name, index: 1 } });
+    // 8.1) read_progress filter tests
+    const onlyTodo = await client.callTool({ name: 'read_progress', arguments: { name, only: 'todo' } });
+    const todoText = onlyTodo.content?.[0]?.text || '';
+    assert(/- \[ \] first/.test(todoText), 'Filter todo should include pending first');
+    assert(!/second/.test(todoText) && !/third/.test(todoText), 'Filter todo should exclude other states');
+
+    const onlyDoing = await client.callTool({ name: 'read_progress', arguments: { name, only: 'in_progress' } });
+    const doingText = onlyDoing.content?.[0]?.text || '';
+    assert(/- \[~\] second/.test(doingText), 'Filter in_progress should include second');
+
+    const onlyDone = await client.callTool({ name: 'read_progress', arguments: { name, only: 'done' } });
+    const doneText = onlyDone.content?.[0]?.text || '';
+    assert(/- \[x\] third/.test(doneText), 'Filter done should include third');
+
+    // 9) progress_mark_complete by text (complete first)
+    await client.callTool({ name: 'progress_mark_complete', arguments: { name, match: 'first' } });
     readProgress = await client.callTool({ name: 'read_progress', arguments: { name } });
     progressText = readProgress.content?.[0]?.text || '';
     assert(/- \[x\] first/.test(progressText), 'Item 1 should be completed');
+
+    // 9.1) progress_add with list, including duplicate should skip
+    const bulkAddRes = await client.callTool({ name: 'progress_add', arguments: { name, item: ['fourth', 'third'] } });
+    const bulkAdd = JSON.parse(bulkAddRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(bulkAdd.added) && bulkAdd.added.includes('fourth'), 'Bulk add should include fourth');
+    assert(Array.isArray(bulkAdd.skipped) && bulkAdd.skipped.includes('third'), 'Bulk add should skip duplicate third');
+
+    // 9.2) progress_set_state with list; include a non-matching term and verify notMatched
+    const setManyRes = await client.callTool({ name: 'progress_set_state', arguments: { name, match: ['fourth', '__nope__'], state: 'completed' } });
+    const setMany = JSON.parse(setManyRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(setMany.changed) && setMany.changed.length >= 1, 'Should change at least one item');
+    assert(Array.isArray(setMany.notMatched) && setMany.notMatched.includes('__nope__'), 'Should report notMatched terms');
+
+    // 9.3) progress_set_state with no matches should prompt to pull list
+    const noMatchRes = await client.callTool({ name: 'progress_set_state', arguments: { name, match: ['__really_nope_only__'], state: 'in_progress' } });
+    const noMatch = JSON.parse(noMatchRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(noMatch.changed) && noMatch.changed.length === 0, 'No matches should return empty changed');
+    assert(typeof noMatch.notice === 'string' && /pull updated list/i.test(noMatch.notice), 'Should include notice to pull updated list');
+    assert(noMatch.suggest === 'read_progress', 'Should suggest read_progress');
+
+    // 9.4) write_progress with JSON list content on a new project
+    const name3 = `${name}_arr`;
+    await client.callTool({ name: 'init_project', arguments: { name: name3 } });
+    await client.callTool({ name: 'write_progress', arguments: { name: name3, content: ['A', 'B'] } });
+    const rp3 = await client.callTool({ name: 'read_progress', arguments: { name: name3 } });
+    const pt3 = rp3.content?.[0]?.text || '';
+    assert(/- \[ \] A/.test(pt3) && /- \[ \] B/.test(pt3), 'write_progress should accept JSON list content');
 
     // 10) list_projects contains name
     const list2 = await client.callTool({ name: 'list_projects', arguments: {} });

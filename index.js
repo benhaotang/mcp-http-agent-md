@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -12,9 +13,38 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Load environment from .env (no external dependency)
+function loadEnvFromDotenv() {
+  try {
+    const envPath = path.resolve(process.cwd(), '.env');
+    if (!fs.existsSync(envPath)) return;
+    const content = fs.readFileSync(envPath, 'utf8');
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      const m = line.match(/^\s*(?:export\s+)?([^=\s]+)\s*=\s*(.*)\s*$/);
+      if (!m) continue;
+      const key = m[1];
+      let val = m[2] ?? '';
+      // Strip surrounding quotes if present
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith('\'') && val.endsWith('\''))) {
+        val = val.slice(1, -1);
+      }
+      if (typeof process.env[key] === 'undefined') {
+        process.env[key] = val;
+      }
+    }
+  } catch {
+    // Best-effort: ignore parse errors
+  }
+}
+
+loadEnvFromDotenv();
+
 // Configuration
-const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const BASE_PATH = process.env.BASE_PATH || '/mcp'; // MCP endpoint path
+const HOST = process.env.HOST || process.env.MCP_HOST || 'localhost';
+const PORT = process.env.PORT ? Number(process.env.PORT) : (process.env.MCP_PORT ? Number(process.env.MCP_PORT) : 3000);
 import { buildAuthRouter, apiKeyQueryMiddleware } from './src/auth.js';
 import {
   listProjects as dbListProjects,
@@ -557,9 +587,9 @@ app.use('/auth', buildAuthRouter());
 
 // Start server
 async function start() {
-  app.listen(PORT, () => {
-    console.log(`MCP server listening on http://localhost:${PORT}${BASE_PATH}?apiKey=XXXX`);
-    console.log(`Admin auth endpoint: http://localhost:${PORT}/auth (Bearer MAIN_API_KEY)`);
+  app.listen(PORT, HOST, () => {
+    console.log(`MCP server listening on http://${HOST}:${PORT}${BASE_PATH}?apiKey=XXXX`);
+    console.log(`Admin auth endpoint: http://${HOST}:${PORT}/auth (Bearer MAIN_API_KEY)`);
   });
 }
 

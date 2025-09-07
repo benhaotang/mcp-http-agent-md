@@ -38,6 +38,7 @@ Expose these tools via MCP CallTool:
 - `progress_add` — Append new items `{ name, item }` where `item` is a string or JSON list like `["task1","task2"]`. Duplicate tasks (case-insensitive, trimmed) are not added; the response includes `skipped` (or `exists` for single adds).
 - `progress_set_state` — Set item state by matching text only `{ name, match, state: 'pending'|'in_progress'|'completed' }`. `match` can be a string or JSON list (e.g., `["foo","bar"]`). Response includes `notMatched` terms. If nothing matches, it also suggests pulling the updated list.
 - `progress_mark_complete` — Mark item(s) completed by matching text only `{ name, match }`. `match` can be a string or JSON list. Response includes `notMatched` terms. If nothing matches, the tool suggests pulling the updated list.
+- `get_agents_md_examples` — Get examples for writing AGENTS.md from `example_agent_md.json`. Optional `only` (string or JSON list) filters examples by usecase/title. Always includes `the_art_of_writing_agents_md`.
 
 Transport: Streamable HTTP (stateless JSON response mode). Clients should POST JSON-RPC requests to `/mcp?apiKey=YOUR_USER_API_KEY`.
 

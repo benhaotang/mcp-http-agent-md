@@ -76,7 +76,8 @@ async function run() {
     const expected = [
       'list_projects','init_project','delete_project','rename_project',
       'read_agent','write_agent','read_progress','write_progress',
-      'progress_add','progress_set_state','progress_mark_complete'
+      'progress_add','progress_set_state','progress_mark_complete',
+      'get_agents_md_examples'
     ];
     for (const n of expected) assert(toolNames.includes(n), `Missing tool: ${n}`);
 
@@ -186,6 +187,20 @@ async function run() {
     const list4 = await client.callTool({ name: 'list_projects', arguments: {} });
     const projectsList3 = JSON.parse(list4.content?.[0]?.text || '{}').projects || [];
     assert(!projectsList3.includes(name2), 'delete_project should remove the project');
+
+    // 13) get_agents_md_examples returns philosophy example and always includes the art field
+    const ex1Res = await client.callTool({ name: 'get_agents_md_examples', arguments: { only: 'philosophy' } });
+    const ex1 = JSON.parse(ex1Res.content?.[0]?.text || '{}');
+    assert(typeof ex1.the_art_of_writing_agents_md === 'string' && ex1.the_art_of_writing_agents_md.length > 0, 'Should include the_art_of_writing_agents_md');
+    assert(Array.isArray(ex1.examples), 'examples should be an array');
+    if (ex1.examples.length > 0) {
+      const allMatch = ex1.examples.every(e => String(e.usecase || e.title || '').toLowerCase().includes('philosophy'));
+      assert(allMatch, 'Filtered examples should relate to philosophy');
+    }
+    // Also test list input for only
+    const ex2Res = await client.callTool({ name: 'get_agents_md_examples', arguments: { only: ['philosophy'] } });
+    const ex2 = JSON.parse(ex2Res.content?.[0]?.text || '{}');
+    assert(typeof ex2.the_art_of_writing_agents_md === 'string' && ex2.the_art_of_writing_agents_md.length > 0, 'List filter should also include art field');
 
     console.log('All MCP tool tests passed.');
   } catch (err) {

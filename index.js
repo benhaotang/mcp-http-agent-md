@@ -307,6 +307,37 @@ function defaultProgressMd() {
   return `# progress.md\n\n- [ ] Initial setup\n- [ ] Define tasks\n- [ ] Implement features\n- [ ] Review and refine\n`;
 }
 
+// ---------- Agent MD Examples (from example_agent_md.json) ----------
+const EXAMPLES_JSON_PATH = path.resolve(__dirname, 'example_agent_md.json');
+
+async function loadAgentExamplesJson() {
+  try {
+    const raw = await fs.promises.readFile(EXAMPLES_JSON_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    const theArt = parsed.the_art_of_writing_agents_md || parsed["the_art_of_writing_agents_md"] || '';
+    const examples = Array.isArray(parsed.examples) ? parsed.examples : [];
+    return { theArt, examples, rawParsed: parsed };
+  } catch (err) {
+    return { theArt: '', examples: [], rawParsed: null };
+  }
+}
+
+function normalizeOnlyList(only) {
+  if (only == null) return [];
+  if (Array.isArray(only)) return only.map(String).map(s => s.trim()).filter(Boolean);
+  return [String(only).trim()].filter(Boolean);
+}
+
+function filterExamplesByOnly(examples, onlyList) {
+  if (!onlyList.length) return examples;
+  const needles = onlyList.map(s => s.toLowerCase());
+  return examples.filter(ex => {
+    const u = String(ex.usecase || '').toLowerCase();
+    const t = String(ex.title || '').toLowerCase();
+    return needles.some(n => u.includes(n) || t.includes(n));
+  });
+}
+
 // Build a fresh MCP server instance for each request (stateless mode)
 function buildMcpServer(userId) {
   const ops = userOps(userId);
@@ -316,8 +347,17 @@ function buildMcpServer(userId) {
   );
 
   // Describe available tools
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const { examples } = await loadAgentExamplesJson();
+    const available = examples.map(ex => `${ex.usecase || ''}${ex.title ? ` - ${ex.title}` : ''}`.trim()).filter(Boolean);
+    const examplesToolDesc = [
+      'Get AGENTS.md examples from example_agent_md.json.',
+      available.length ? `Available examples: ${available.join('; ')}` : 'No examples found.',
+      "Optional 'only' filters by usecase/title (string or list).",
+      "Always includes 'the_art_of_writing_agents_md'."
+    ].join(' ');
+
+    return { tools: [
       {
         name: 'list_projects',
         description: 'List all project names',
@@ -440,9 +480,19 @@ function buildMcpServer(userId) {
           },
           required: ['name', 'content']
         }
+      },
+      {
+        name: 'get_agents_md_examples',
+        description: examplesToolDesc,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            only: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
+          }
+        }
       }
-    ]
-  }));
+    ]};
+  });
 
   // Tool invocation handler
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -493,6 +543,20 @@ function buildMcpServer(userId) {
         const coerced = coerceProgressContent(content);
         await ops.writeDoc(projName, 'progress', coerced);
         return okText('ok');
+      }
+      case 'get_agents_md_examples': {
+        const { only } = args || {};
+        const { theArt, examples, rawParsed } = await loadAgentExamplesJson();
+        if (!rawParsed) {
+          return okText(JSON.stringify({ error: 'examples_file_not_found', message: 'example_agent_md.json not found or invalid', the_art_of_writing_agents_md: '', examples: [] }));
+        }
+        const onlyList = normalizeOnlyList(only);
+        const filtered = filterExamplesByOnly(examples, onlyList);
+        const result = {
+          the_art_of_writing_agents_md: theArt,
+          examples: filtered
+        };
+        return okText(JSON.stringify(result));
       }
       case 'progress_add': {
         const { name: projName, item } = args || {};

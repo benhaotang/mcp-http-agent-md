@@ -70,6 +70,11 @@ async function run() {
     const transport = new StreamableHTTPClientTransport(new URL(baseWithKey));
     await client.connect(transport);
 
+    // 0) write to non-existent project should return error payload
+    const badWrite = await client.callTool({ name: 'write_agent', arguments: { name: '__no_such_project__', content: 'x' } });
+    const badPayload = JSON.parse(badWrite.content?.[0]?.text || '{}');
+    assert(badPayload.error === 'project_not_found', 'write_agent should error for non-existent project');
+
     // 1) tools/list
     const list = await client.listTools({});
     const toolNames = (list.tools || []).map(t => t.name).sort();

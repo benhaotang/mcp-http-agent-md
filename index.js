@@ -609,8 +609,14 @@ function buildMcpServer(userId) {
       }
       case 'init_project': {
         const { name: projName, agent, progress } = args || {};
-        const result = await ops.initProject(projName, { agent, progress });
-        return okText(JSON.stringify(result));
+        try {
+          const result = await ops.initProject(projName, { agent, progress });
+          return okText(JSON.stringify({ status: 'ok', ...result }));
+        } catch (err) {
+          const msg = String(err?.message || err || 'init failed');
+          const code = /user not authenticated/i.test(msg) ? 'unauthorized' : (/project name required/i.test(msg) ? 'invalid_request' : 'init_failed');
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
       }
       case 'delete_project': {
         const { name: projName } = args || {};
@@ -631,24 +637,28 @@ function buildMcpServer(userId) {
         const { name: projName } = args || {};
         let { content, patch, mode } = args || {};
         const editMode = String(mode || (patch ? 'patch' : 'full')).toLowerCase();
-        if (editMode === 'full') {
-          if (typeof content !== 'string') throw new Error('content (string) required for full mode');
-          await ops.writeDoc(projName, 'agent', content);
-          return okText(JSON.stringify({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8') }));
-        }
-        if (editMode === 'patch' || editMode === 'diff') {
-          if (typeof patch !== 'string') throw new Error('patch (unified diff string) required for patch/diff mode');
-          let current = '';
-          try {
-            current = await ops.readDoc(projName, 'agent');
-          } catch {
-            current = '';
+        try {
+          if (editMode === 'full') {
+            if (typeof content !== 'string') throw new Error('content (string) required for full mode');
+            await ops.writeDoc(projName, 'agent', content);
+            return okText(JSON.stringify({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8') }));
           }
-          const updated = applyUnifiedDiff(current, patch);
-          await ops.writeDoc(projName, 'agent', updated);
-          return okText(JSON.stringify({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8') }));
+          if (editMode === 'patch' || editMode === 'diff') {
+            if (typeof patch !== 'string') throw new Error('patch (unified diff string) required for patch/diff mode');
+            const current = await ops.readDoc(projName, 'agent');
+            const updated = applyUnifiedDiff(current, patch);
+            await ops.writeDoc(projName, 'agent', updated);
+            return okText(JSON.stringify({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8') }));
+          }
+          throw new Error(`Unknown mode: ${mode}`);
+        } catch (err) {
+          const msg = String(err?.message || err || 'write failed');
+          const code = /project not found/i.test(msg) ? 'project_not_found' : (/patch/i.test(msg) ? 'patch_failed' : 'write_failed');
+          const suggest = code === 'project_not_found' ? 'init_project' : (code === 'patch_failed' ? 'read_agent' : undefined);
+          const payload = { error: code, message: msg };
+          if (suggest) payload.suggest = suggest;
+          return okText(JSON.stringify(payload));
         }
-        throw new Error(`Unknown mode: ${mode}`);
       }
       case 'read_progress': {
         const { name: projName, only } = args || {};
@@ -658,9 +668,17 @@ function buildMcpServer(userId) {
       }
       case 'write_progress': {
         const { name: projName, content } = args || {};
-        const coerced = coerceProgressContent(content);
-        await ops.writeDoc(projName, 'progress', coerced);
-        return okText('ok');
+        try {
+          const coerced = coerceProgressContent(content);
+          await ops.writeDoc(projName, 'progress', coerced);
+          return okText(JSON.stringify({ status: 'ok', bytes: Buffer.byteLength(coerced, 'utf8') }));
+        } catch (err) {
+          const msg = String(err?.message || err || 'write failed');
+          const code = /project not found/i.test(msg) ? 'project_not_found' : 'write_failed';
+          const payload = { error: code, message: msg };
+          if (code === 'project_not_found') payload.suggest = 'init_project';
+          return okText(JSON.stringify(payload));
+        }
       }
       case 'get_agents_md_examples': {
         const { only } = args || {};

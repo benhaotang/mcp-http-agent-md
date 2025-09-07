@@ -52,6 +52,8 @@ async function openDb() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
   `);
+  // Enable foreign key constraints in SQLite (helps catch bad user_id early)
+  try { db.exec('PRAGMA foreign_keys = ON;'); } catch {}
   dbInstance = db;
   return dbInstance;
 }
@@ -182,13 +184,19 @@ export async function listProjects(userId) {
 export async function initProject(userId, name, { agentJson, progressJson }) {
   const db = await openDb();
   const now = new Date().toISOString();
-  const id = newUserId();
-  const stmt = db.prepare(`INSERT OR IGNORE INTO user_projects
-    (id, user_id, name, agent_json, progress_json, created_at)
-    VALUES ($id, $u, $n, $a, $p, $c)`);
-  stmt.bind({ $id: id, $u: userId, $n: name, $a: agentJson, $p: progressJson, $c: now });
-  stmt.step();
-  stmt.free();
+  if (!userId) throw new Error('user not authenticated');
+  if (!name) throw new Error('project name required');
+  const upsert = db.prepare(`
+    INSERT INTO user_projects (id, user_id, name, agent_json, progress_json, created_at, updated_at)
+    VALUES ($id, $u, $n, $a, $p, $c, $uAt)
+    ON CONFLICT(user_id, name) DO UPDATE SET
+      agent_json = excluded.agent_json,
+      progress_json = excluded.progress_json,
+      updated_at = excluded.updated_at
+  `);
+  upsert.bind({ $id: newUserId(), $u: userId, $n: name, $a: agentJson, $p: progressJson, $c: now, $uAt: now });
+  upsert.step();
+  upsert.free();
   await persistDb();
   return { name };
 }
@@ -235,14 +243,14 @@ export async function writeDoc(userId, name, which, content) {
   const now = new Date().toISOString();
   const col = which === 'agent' ? 'agent_json' : 'progress_json';
   const json = JSON.stringify({ content: String(content ?? '') });
-  // Ensure project exists
-  const ensure = db.prepare(`INSERT OR IGNORE INTO user_projects
-    (id, user_id, name, agent_json, progress_json, created_at)
-    VALUES ($id, $u, $n, $a, $p, $c)`);
-  const id = newUserId();
-  ensure.bind({ $id: id, $u: userId, $n: name, $a: JSON.stringify({ content: '' }), $p: JSON.stringify({ content: '' }), $c: now });
-  ensure.step();
-  ensure.free();
+  // Require project to exist; do not auto-create on write
+  const existsStmt = db.prepare('SELECT id FROM user_projects WHERE user_id = $u AND name = $n');
+  existsStmt.bind({ $u: userId, $n: name });
+  const found = existsStmt.step();
+  existsStmt.free();
+  if (!found) {
+    throw new Error('project not found');
+  }
   const stmt = db.prepare(`UPDATE user_projects SET ${col} = $val, updated_at = $now WHERE user_id = $u AND name = $n`);
   stmt.bind({ $val: json, $now: now, $u: userId, $n: name });
   stmt.step();

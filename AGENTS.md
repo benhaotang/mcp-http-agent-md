@@ -47,10 +47,10 @@ Expose these tools via MCP CallTool:
 - `read_agent` — Read agent.md `{ name }`
 - `read_agent` — Read agent.md `{ name, lineNumbers? }`. If `lineNumbers` is `true`, prepends `N|` before each line.
 - `write_agent` — Write agent.md `{ name, content }`
-- `read_progress` — Read structured tasks `{ name, only? }`. Returns JSON with `tasks` array. `only` filters by `pending|in_progress|completed` (synonyms supported).
+- `read_progress` — Read structured tasks `{ name, only? }`. Returns JSON with `tasks` array and a `markdown` field that renders tasks as a nested outline for readability. `only` filters by `pending|in_progress|completed|archived` (synonyms supported). Archived tasks are excluded by default; they are included only if `only` contains `archived`.
 - `write_progress` — Replace or add structured tasks `{ name, content, mode? }` where `content` is a list of task objects and `mode` is `replace` (default) or `add`. Use `parent_id` to reference the root task for nesting (arbitrary depth).
 - `progress_add` — Add one or more structured tasks `{ name, item }` where `item` is a task object or list of task objects. Use `parent_id` to reference the root task for nesting. Duplicate `task_id` are not added; response includes `exists` (single) or `skipped` (list via `exists`).
-- `progress_set_state` — Set task state by `task_id` (8-char) or by matching `task_info` substring `{ name, match, state }`. Response includes `notMatched` terms.
+- `progress_set_state` — Update tasks by `task_id` (8-char) or by matching `task_info` substring `{ name, match, state?, task_info?, parent_id?, extra_note? }`. State accepts `pending|in_progress|completed|archived`. Archiving or completing cascades to all children (by `parent_id`) recursively. Lock rules: when a task or any ancestor is completed/archived, no edits are allowed except unlocking the task itself to `pending`/`in_progress`, and only if no ancestor is locked. Unlocking a parent propagates to its children.
 - `progress_mark_complete` — Mark tasks completed by `task_id` or text `{ name, match }`. Response includes `notMatched` terms.
 - `get_agents_md_examples` — Get examples for writing AGENTS.md from `example_agent_md.json`. Optional `only` (string or JSON list) filters examples by usecase/title. Always includes `the_art_of_writing_agents_md`.
 
@@ -59,7 +59,7 @@ Transport: Streamable HTTP (stateless JSON response mode). Clients should POST J
 Structured tasks format:
 - Task object: `{ task_id, task_info, parent_id?, status?, extra_note? }`.
 - `task_id` MUST be exactly 8 characters, lowercase `a-z` and `0-9` only (e.g., `abcd1234`). Invalid IDs are rejected.
-- `status` is one of `pending | in_progress | completed` (synonyms accepted on input).
+- `status` is one of `pending | in_progress | completed | archived` (synonyms accepted on input).
 - `parent_id` (optional) should reference the root task’s `task_id` in the same project. This enables arbitrary-depth nesting; a child can itself be a root for deeper descendants.
 
 Project selection: All task tools take a `name` (project name) parameter. The server resolves it to the correct internal `project_id`—you never need to provide `project_id` directly.

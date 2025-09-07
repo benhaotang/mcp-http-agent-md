@@ -313,6 +313,10 @@ export async function listTasks(userId, projectName, { only } = {}) {
     const placeholders = only.map((_, i) => `$s${i}`);
     query += ` AND status IN (${placeholders.join(',')})`;
     only.forEach((s, i) => { bind[`$s${i}`] = String(s); });
+  } else {
+    // Default exclude archived
+    query += ' AND status != $archived';
+    bind.$archived = 'archived';
   }
   query += ' ORDER BY created_at ASC';
   const stmt = db.prepare(query);
@@ -386,13 +390,14 @@ export async function replaceTasks(userId, projectName, tasks) {
   return await addTasks(userId, projectName, tasks);
 }
 
-export async function setTasksState(userId, projectName, { matchIds = [], matchText = [], state }) {
+export async function setTasksState(userId, projectName, { matchIds = [], matchText = [], state, task_info, parent_id, extra_note }) {
   const db = await openDb();
   const proj = await getProjectByName(userId, projectName);
   if (!proj) throw new Error('project not found');
   const now = new Date().toISOString();
   const changedIds = new Set();
   const notMatched = [];
+  const forbidden = [];
 
   // Update by IDs
   const selById = db.prepare('SELECT status FROM project_tasks WHERE user_id = $u AND project_id = $p AND task_id = $tid');
@@ -401,11 +406,8 @@ export async function setTasksState(userId, projectName, { matchIds = [], matchT
     const exists = selById.step();
     selById.reset();
     if (!exists) { notMatched.push(tid); continue; }
-    const upd = db.prepare('UPDATE project_tasks SET status = $st, updated_at = $now WHERE user_id = $u AND project_id = $p AND task_id = $tid');
-    upd.bind({ $st: state, $now: now, $u: userId, $p: proj.id, $tid: tid });
-    upd.step();
-    upd.free();
-    changedIds.add(tid);
+    const ok = applyUpdateForId(db, { userId, projectId: proj.id, tid, now, state, task_info, parent_id, extra_note });
+    if (ok) changedIds.add(tid); else forbidden.push(tid);
   }
 
   // Update by text contains
@@ -416,11 +418,8 @@ export async function setTasksState(userId, projectName, { matchIds = [], matchT
     while (q.step()) {
       const r = q.getAsObject();
       if (String(r.task_info || '').toLowerCase().includes(String(term).toLowerCase())) {
-        const upd = db.prepare('UPDATE project_tasks SET status = $st, updated_at = $now WHERE user_id = $u AND project_id = $p AND task_id = $tid');
-        upd.bind({ $st: state, $now: now, $u: userId, $p: proj.id, $tid: r.task_id });
-        upd.step();
-        upd.free();
-        changedIds.add(r.task_id);
+        const ok = applyUpdateForId(db, { userId, projectId: proj.id, tid: r.task_id, now, state, task_info, parent_id, extra_note });
+        if (ok) changedIds.add(r.task_id); else forbidden.push(r.task_id);
         matchedAny = true;
       }
     }
@@ -428,7 +427,96 @@ export async function setTasksState(userId, projectName, { matchIds = [], matchT
     if (!matchedAny) notMatched.push(term);
   }
   await persistDb();
-  return { changedIds: Array.from(changedIds.values()), notMatched };
+  return { changedIds: Array.from(changedIds.values()), notMatched, forbidden };
+}
+
+function applyUpdateForId(db, { userId, projectId, tid, now, state, task_info, parent_id, extra_note }) {
+  const { selfLocked, ancestorLocked, selfStatus } = getLockInfo(db, { userId, projectId, tid });
+  const newState = state || null;
+  const isUnlocking = (selfLocked && (newState === 'pending' || newState === 'in_progress'));
+  // Forbid if any ancestor is locked (completed/archived)
+  if (ancestorLocked) return false;
+  // Forbid field updates when self is locked
+  const wantsFieldUpdate = (typeof task_info !== 'undefined') || (typeof parent_id !== 'undefined') || (typeof extra_note !== 'undefined');
+  if (wantsFieldUpdate && selfLocked) return false;
+  // If self is locked and attempting a status change that is not unlocking, forbid
+  if (selfLocked && newState && !isUnlocking) return false;
+
+  const fields = [];
+  const bind = { $u: userId, $p: projectId, $tid: tid, $now: now };
+  if (typeof state !== 'undefined' && state) { fields.push('status = $st'); bind.$st = state; }
+  if (typeof task_info !== 'undefined') { fields.push('task_info = $ti'); bind.$ti = String(task_info || ''); }
+  if (typeof parent_id !== 'undefined') { fields.push('parent_id = $pid'); bind.$pid = parent_id || null; }
+  if (typeof extra_note !== 'undefined') { fields.push('extra_note = $en'); bind.$en = extra_note || null; }
+  fields.push('updated_at = $now');
+  const sql = `UPDATE project_tasks SET ${fields.join(', ')} WHERE user_id = $u AND project_id = $p AND task_id = $tid`;
+  const upd = db.prepare(sql);
+  upd.bind(bind);
+  upd.step();
+  upd.free();
+  // Cascade status to children when a new status is provided (any status)
+  if (bind.$st) {
+    cascadeSetStatus(db, { userId, projectId, rootId: tid, now, status: bind.$st });
+  }
+  return true;
+}
+
+function cascadeSetStatus(db, { userId, projectId, rootId, now, status }) {
+  const seen = new Set();
+  const queue = [rootId];
+  while (queue.length) {
+    const current = queue.shift();
+    if (seen.has(current)) continue;
+    seen.add(current);
+    // children are tasks whose parent_id equals current
+    const q = db.prepare('SELECT task_id FROM project_tasks WHERE user_id = $u AND project_id = $p AND parent_id = $pid');
+    q.bind({ $u: userId, $p: projectId, $pid: current });
+    const toArchive = [];
+    while (q.step()) {
+      const r = q.getAsObject();
+      toArchive.push(r.task_id);
+    }
+    q.free();
+    for (const tid of toArchive) {
+      const upd = db.prepare('UPDATE project_tasks SET status = $st, updated_at = $now WHERE user_id = $u AND project_id = $p AND task_id = $tid');
+      upd.bind({ $st: status, $now: now, $u: userId, $p: projectId, $tid: tid });
+      upd.step();
+      upd.free();
+      queue.push(tid);
+    }
+  }
+}
+
+function getLockInfo(db, { userId, projectId, tid }) {
+  const lockedStatuses = new Set(['completed', 'archived']);
+  let selfLocked = false;
+  let selfStatus = null;
+  // Fetch self
+  const selfStmt = db.prepare('SELECT parent_id, status FROM project_tasks WHERE user_id = $u AND project_id = $p AND task_id = $tid');
+  selfStmt.bind({ $u: userId, $p: projectId, $tid: tid });
+  const exists = selfStmt.step();
+  if (!exists) { selfStmt.free(); return { selfLocked: false, ancestorLocked: false, selfStatus: null }; }
+  let row = selfStmt.getAsObject();
+  selfStmt.free();
+  selfStatus = String(row.status || 'pending');
+  if (lockedStatuses.has(selfStatus)) selfLocked = true;
+  // Walk ancestors
+  let parent = row.parent_id || null;
+  const seen = new Set();
+  while (parent) {
+    if (seen.has(parent)) break; // avoid cycles
+    seen.add(parent);
+    const pStmt = db.prepare('SELECT parent_id, status FROM project_tasks WHERE user_id = $u AND project_id = $p AND task_id = $tid');
+    pStmt.bind({ $u: userId, $p: projectId, $tid: parent });
+    const ok = pStmt.step();
+    if (!ok) { pStmt.free(); break; }
+    const pr = pStmt.getAsObject();
+    pStmt.free();
+    const st = String(pr.status || 'pending');
+    if (lockedStatuses.has(st)) return { selfLocked, ancestorLocked: true, selfStatus };
+    parent = pr.parent_id || null;
+  }
+  return { selfLocked, ancestorLocked: false, selfStatus };
 }
 
 export async function deleteAllTasks(userId, projectName) {

@@ -183,7 +183,7 @@ async function run() {
     const name3 = `${name}_arr`;
     await client.callTool({ name: 'init_project', arguments: { name: name3 } });
     const tA = { task_id: 'abcd1234', task_info: 'A' };
-    const tB = { task_id: 'bcde2345', task_info: 'B' };
+    const tB = { task_id: 'bcde2345', task_info: 'B', parent_id: 'abcd1234' };
     const wr = await client.callTool({ name: 'write_progress', arguments: { name: name3, content: [tA, tB] } });
     const wrPayload = JSON.parse(wr.content?.[0]?.text || '{}');
     assert(Array.isArray(wrPayload.added) && wrPayload.added.length === 2, 'write_progress should add two tasks');
@@ -191,6 +191,73 @@ async function run() {
     const pt3 = JSON.parse(rp3.content?.[0]?.text || '{}');
     const ids3 = pt3.tasks.map(t => t.task_id);
     assert(ids3.includes('abcd1234') && ids3.includes('bcde2345'), 'read_progress should list tasks we wrote');
+    assert(typeof pt3.markdown === 'string' && pt3.markdown.includes('- [ ] A (abcd1234)'), 'markdown should render pending A with id');
+
+    // 13) Update fields via progress_set_state: change task_info and extra_note of bcde2345
+    const updRes = await client.callTool({ name: 'progress_set_state', arguments: { name: name3, match: 'bcde2345', state: 'in_progress', task_info: 'B updated', extra_note: 'note' } });
+    const upd = JSON.parse(updRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(upd.changed) && upd.changed.includes('bcde2345'), 'Should report changed id bcde2345');
+    const rp4 = await client.callTool({ name: 'read_progress', arguments: { name: name3 } });
+    const p4 = JSON.parse(rp4.content?.[0]?.text || '{}');
+    const bRow = p4.tasks.find(t => t.task_id === 'bcde2345');
+    assert(bRow && bRow.task_info === 'B updated' && bRow.extra_note === 'note' && bRow.status === 'in_progress', 'Fields should be updated');
+
+    // 14) Archive root abcd1234; child bcde2345 should cascade to archived
+    await client.callTool({ name: 'progress_set_state', arguments: { name: name3, match: 'abcd1234', state: 'archived' } });
+    const rp5 = await client.callTool({ name: 'read_progress', arguments: { name: name3 } });
+    const p5 = JSON.parse(rp5.content?.[0]?.text || '{}');
+    const ids5 = p5.tasks.map(t => t.task_id);
+    assert(!ids5.includes('abcd1234') && !ids5.includes('bcde2345'), 'Default read excludes archived');
+    assert(!p5.markdown.includes('(abcd1234)') && !p5.markdown.includes('(bcde2345)'), 'markdown should exclude archived by default');
+    const rp5arch = await client.callTool({ name: 'read_progress', arguments: { name: name3, only: 'archived' } });
+    const p5a = JSON.parse(rp5arch.content?.[0]?.text || '{}');
+    const ids5a = p5a.tasks.map(t => t.task_id);
+    assert(ids5a.includes('abcd1234') && ids5a.includes('bcde2345'), 'Archived filter shows archived tasks including children');
+    assert(p5a.markdown.includes('- [A] A (abcd1234)'), 'markdown should show archived with [A]');
+
+    // 14.1) Mixed filter including archived should include archived too
+    const rp5mix = await client.callTool({ name: 'read_progress', arguments: { name: name3, only: ['archived','in_progress'] } });
+    const p5m = JSON.parse(rp5mix.content?.[0]?.text || '{}');
+    const ids5m = new Set((p5m.tasks || []).map(t => t.task_id));
+    assert(ids5m.has('abcd1234') && ids5m.has('bcde2345'), 'Mixed filter should include archived when requested');
+
+    // 15) Completed cascades to children recursively
+    const name4 = `${name}_cascade_complete`;
+    await client.callTool({ name: 'init_project', arguments: { name: name4 } });
+    const p1 = { task_id: 'aaaa1111', task_info: 'P1' };
+    const c1 = { task_id: 'bbbb2222', task_info: 'C1', parent_id: 'aaaa1111' };
+    const c2 = { task_id: 'cccc3333', task_info: 'C2', parent_id: 'bbbb2222' }; // deep child
+    await client.callTool({ name: 'progress_add', arguments: { name: name4, item: [p1, c1, c2] } });
+    await client.callTool({ name: 'progress_set_state', arguments: { name: name4, match: 'aaaa1111', state: 'completed' } });
+    const rp6 = await client.callTool({ name: 'read_progress', arguments: { name: name4, only: 'completed' } });
+    const p6 = JSON.parse(rp6.content?.[0]?.text || '{}');
+    const ids6 = new Set((p6.tasks || []).map(t => t.task_id));
+    assert(ids6.has('aaaa1111') && ids6.has('bbbb2222') && ids6.has('cccc3333'), 'Completing parent should cascade to all descendants');
+
+    // 15.1) Attempt to modify child while parent is locked (completed) should be forbidden
+    const forbidEditRes = await client.callTool({ name: 'progress_set_state', arguments: { name: name4, match: 'bbbb2222', task_info: 'C1 edited while locked' } });
+    const forbidEdit = JSON.parse(forbidEditRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(forbidEdit.forbidden) && forbidEdit.forbidden.includes('bbbb2222'), 'Editing child fields should be forbidden when parent is locked');
+    // Attempt to unlock child status alone should also be forbidden while ancestor locked
+    const forbidUnlockChildRes = await client.callTool({ name: 'progress_set_state', arguments: { name: name4, match: 'bbbb2222', state: 'pending' } });
+    const forbidUnlockChild = JSON.parse(forbidUnlockChildRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(forbidUnlockChild.forbidden) && forbidUnlockChild.forbidden.includes('bbbb2222'), 'Unlocking child should be forbidden when ancestor is locked');
+
+    // 15.2) Revert parent to in_progress; should cascade to descendants
+    await client.callTool({ name: 'progress_set_state', arguments: { name: name4, match: 'aaaa1111', state: 'in_progress' } });
+    const rp7 = await client.callTool({ name: 'read_progress', arguments: { name: name4, only: 'in_progress' } });
+    const p7 = JSON.parse(rp7.content?.[0]?.text || '{}');
+    const ids7 = new Set((p7.tasks || []).map(t => t.task_id));
+    assert(ids7.has('aaaa1111') && ids7.has('bbbb2222') && ids7.has('cccc3333'), 'Unlocking parent should cascade in_progress to all descendants');
+
+    // 15.3) Now child can be edited
+    const childEditRes = await client.callTool({ name: 'progress_set_state', arguments: { name: name4, match: 'bbbb2222', task_info: 'C1 unlocked edit', extra_note: 'ok' } });
+    const childEdit = JSON.parse(childEditRes.content?.[0]?.text || '{}');
+    assert(Array.isArray(childEdit.changed) && childEdit.changed.includes('bbbb2222'), 'Child edit should be allowed after unlock');
+    const rp8 = await client.callTool({ name: 'read_progress', arguments: { name: name4 } });
+    const p8 = JSON.parse(rp8.content?.[0]?.text || '{}');
+    const c1row = (p8.tasks || []).find(t => t.task_id === 'bbbb2222');
+    assert(c1row && c1row.task_info === 'C1 unlocked edit' && c1row.extra_note === 'ok', 'Child fields should reflect unlocked edits');
 
     // 11) generate_task_ids returns unique 8-char ids not colliding with user tasks
     const genRes = await client.callTool({ name: 'generate_task_ids', arguments: { count: 5 } });

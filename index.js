@@ -175,6 +175,7 @@ function normalizeStateFilter(val) {
   if (['todo', 'to-do', 'pending', 'not_started', 'not-started', 'open'].includes(v)) return 'pending';
   if (['in_progress', 'in-progress', 'doing', 'wip'].includes(v)) return 'in_progress';
   if (['done', 'completed', 'complete', 'closed'].includes(v)) return 'completed';
+  if (['archived', 'archive'].includes(v)) return 'archived';
   return null;
 }
 
@@ -184,10 +185,11 @@ function validateTaskId(id) {
 
 function normalizeStatus(s) {
   const v = String(s || '').toLowerCase().trim();
-  if (v === 'pending' || v === 'in_progress' || v === 'completed') return v;
+  if (v === 'pending' || v === 'in_progress' || v === 'completed' || v === 'archived') return v;
   if (['todo', 'to-do', 'open', 'not-started', 'not_started'].includes(v)) return 'pending';
   if (['doing', 'wip', 'in-progress'].includes(v)) return 'in_progress';
   if (['done', 'complete', 'closed'].includes(v)) return 'completed';
+  if (['archive', 'archived'].includes(v)) return 'archived';
   return 'pending';
 }
 
@@ -540,6 +542,36 @@ function filterExamplesByOnly(examples, onlyList) {
   });
 }
 
+// Render tasks to nested Markdown for readability
+function renderTasksMarkdown(rows) {
+  const marker = (st) => {
+    if (st === 'completed') return '[x]';
+    if (st === 'in_progress') return '[~]';
+    if (st === 'archived') return '[A]';
+    return '[ ]';
+  };
+  // Build node map
+  const nodes = new Map();
+  for (const r of rows) {
+    nodes.set(r.task_id, { task: r, children: [] });
+  }
+  const roots = [];
+  for (const r of rows) {
+    const node = nodes.get(r.task_id);
+    const pid = r.parent_id || null;
+    if (pid && nodes.has(pid)) nodes.get(pid).children.push(node); else roots.push(node);
+  }
+  const lines = [];
+  function walk(node, depth) {
+    const t = node.task;
+    const indent = '  '.repeat(depth);
+    lines.push(`${indent}- ${marker(t.status)} ${t.task_info} (${t.task_id})`);
+    for (const ch of node.children) walk(ch, depth + 1);
+  }
+  for (const n of roots) walk(n, 0);
+  return lines.join('\n');
+}
+
 // Build a fresh MCP server instance for each request (stateless mode)
 function buildMcpServer(userId) {
   const ops = userOps(userId);
@@ -577,7 +609,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'progress_add',
-        description: 'Add one or more structured tasks. Each requires 8-char task_id (lowercase a-z0-9), task_info; optional parent_id (root task_id for nesting; can nest arbitrarily deep), status (pending|in_progress|completed), extra_note.',
+        description: 'Add one or more structured tasks. Each requires 8-char task_id (lowercase a-z0-9), task_info; optional parent_id (root task_id for nesting; can nest arbitrarily deep), status (pending|in_progress|completed|archived), extra_note.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -590,7 +622,7 @@ function buildMcpServer(userId) {
                     task_id: { type: 'string', minLength: 8, maxLength: 8, description: 'Exactly 8 lowercase a-z0-9 (e.g., abcd1234)' },
                     task_info: { type: 'string' },
                     parent_id: { type: 'string', minLength: 8, maxLength: 8, description: 'Root task_id this task belongs under; enables arbitrary-depth nesting.' },
-                    status: { type: 'string', enum: ['pending','in_progress','completed'] },
+                    status: { type: 'string', enum: ['pending','in_progress','completed','archived'] },
                     extra_note: { type: 'string' }
                   },
                   required: ['task_id','task_info']
@@ -601,7 +633,7 @@ function buildMcpServer(userId) {
                     task_id: { type: 'string', minLength: 8, maxLength: 8 },
                     task_info: { type: 'string' },
                     parent_id: { type: 'string', minLength: 8, maxLength: 8, description: 'Root task_id this task belongs under; enables arbitrary-depth nesting.' },
-                    status: { type: 'string', enum: ['pending','in_progress','completed'] },
+                    status: { type: 'string', enum: ['pending','in_progress','completed','archived'] },
                     extra_note: { type: 'string' }
                   },
                   required: ['task_id','task_info']
@@ -614,15 +646,18 @@ function buildMcpServer(userId) {
       },
       {
         name: 'progress_set_state',
-        description: 'Set state by task_id (8-char) or by matching task_info substring',
+        description: 'Update tasks by task_id (8-char) or by matching task_info substring. Can set state (pending|in_progress|completed|archived) and/or update fields task_info, parent_id, extra_note. Archiving or completing cascades to all children (tasks whose parent_id equals the changed task_id), recursively. Lock rules: when a task or any ancestor is completed/archived, no edits are allowed except unlocking the task itself to pending/in_progress, and only if no ancestor is locked.',
         inputSchema: {
           type: 'object',
           properties: {
             name: { type: 'string' },
             match: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] },
-            state: { type: 'string', enum: ['pending', 'in_progress', 'completed'] }
+            state: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'archived'] },
+            task_info: { type: 'string' },
+            parent_id: { type: 'string', minLength: 8, maxLength: 8 },
+            extra_note: { type: 'string' }
           },
-          required: ['name', 'match', 'state']
+          required: ['name', 'match']
         }
       },
       {
@@ -726,7 +761,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'write_progress',
-        description: 'Replace or add structured tasks. Provide array of tasks; set mode=replace to overwrite all (default), or mode=add to add-only. Use parent_id to point to the root task to nest arbitrarily deep.',
+        description: 'Replace or add structured tasks. Provide array of tasks; set mode=replace to overwrite all (default), or mode=add to add-only. Use parent_id to point to the root task to nest arbitrarily deep. Status accepts pending|in_progress|completed|archived.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -739,7 +774,7 @@ function buildMcpServer(userId) {
                   task_id: { type: 'string', minLength: 8, maxLength: 8 },
                   task_info: { type: 'string' },
                   parent_id: { type: 'string', minLength: 8, maxLength: 8, description: 'Root task_id this task belongs under; enables arbitrary-depth nesting.' },
-                  status: { type: 'string', enum: ['pending','in_progress','completed'] },
+                  status: { type: 'string', enum: ['pending','in_progress','completed','archived'] },
                   extra_note: { type: 'string' }
                 },
                 required: ['task_id','task_info']
@@ -840,10 +875,18 @@ function buildMcpServer(userId) {
       case 'read_progress': {
         const { name: projName, only } = args || {};
         const list = Array.isArray(only) ? only : (typeof only === 'undefined' ? [] : [only]);
-        const wanted = list.map(normalizeStateFilter).filter(Boolean);
+        let wanted = list.map(normalizeStateFilter).filter(Boolean);
+        // Default excludes archived at DB layer when wanted is empty.
+        // If a filter includes 'archived', include archived alongside other requested statuses.
+        const filterProvided = typeof only !== 'undefined';
         try {
+          // If a filter was provided but normalized to empty (no recognized statuses), return empty set.
+          if (filterProvided && wanted.length === 0) {
+            return okText(JSON.stringify({ tasks: [], markdown: '' }));
+          }
           const rows = await dbListTasks(userId, projName, { only: wanted });
-          return okText(JSON.stringify({ tasks: rows }));
+          const markdown = renderTasksMarkdown(rows);
+          return okText(JSON.stringify({ tasks: rows, markdown }));
         } catch (err) {
           const msg = String(err?.message || err);
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'read_failed';
@@ -905,9 +948,9 @@ function buildMcpServer(userId) {
         }
       }
       case 'progress_set_state': {
-        const { name: projName, match, state } = args || {};
+        const { name: projName, match, state, task_info, parent_id, extra_note } = args || {};
         try {
-          const normalizedState = normalizeStatus(state);
+          const normalizedState = typeof state === 'undefined' ? undefined : normalizeStatus(state);
           const maybeList = coerceJsonArray(match);
           const matchList = (maybeList || (match == null ? [] : [match]))
             .map(v => (typeof v === 'string' ? v.trim() : ''))
@@ -915,11 +958,11 @@ function buildMcpServer(userId) {
           if (!matchList.length) throw new Error('match required');
           const ids = matchList.filter(validateTaskId);
           const terms = matchList.filter(s => !validateTaskId(s));
-          const res = await dbSetTasksState(userId, projName, { matchIds: ids, matchText: terms, state: normalizedState });
+          const res = await dbSetTasksState(userId, projName, { matchIds: ids, matchText: terms, state: normalizedState, task_info, parent_id, extra_note });
           if (res.changedIds.length === 0) {
-            return okText(JSON.stringify({ changed: [], state: normalizedState, notMatched: res.notMatched, notice: 'No items matched. Pull updated list?', suggest: 'read_progress' }));
+            return okText(JSON.stringify({ changed: [], state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, notice: 'No items changed. Items may be locked or list changed. Pull updated list?', suggest: 'read_progress' }));
           }
-          return okText(JSON.stringify({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched }));
+          return okText(JSON.stringify({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden }));
         } catch (err) {
           const msg = String(err?.message || err || 'set_state failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'update_failed';
@@ -938,9 +981,9 @@ function buildMcpServer(userId) {
           const terms = matchList.filter(s => !validateTaskId(s));
           const res = await dbSetTasksState(userId, projName, { matchIds: ids, matchText: terms, state: 'completed' });
           if (res.changedIds.length === 0) {
-            return okText(JSON.stringify({ changed: [], state: 'completed', notMatched: res.notMatched, notice: 'No items matched. Pull updated list?', suggest: 'read_progress' }));
+            return okText(JSON.stringify({ changed: [], state: 'completed', notMatched: res.notMatched, forbidden: res.forbidden, notice: 'No items changed. Items may be locked or list changed. Pull updated list?', suggest: 'read_progress' }));
           }
-          return okText(JSON.stringify({ changed: res.changedIds, state: 'completed', notMatched: res.notMatched }));
+          return okText(JSON.stringify({ changed: res.changedIds, state: 'completed', notMatched: res.notMatched, forbidden: res.forbidden }));
         } catch (err) {
           const msg = String(err?.message || err || 'mark_complete failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'update_failed';

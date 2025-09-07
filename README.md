@@ -81,10 +81,11 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
 - rename_project: Rename project `{ oldName, newName }`.
 - read_agent: Read `AGENTS.md` `{ name }`.
 - write_agent: Write `AGENTS.md` `{ name, content }`. Patch/diff mode is also supported via the MCP tool (see server code).
-- read_progress: Read structured tasks for a project `{ name, only? }`. Returns JSON `{ tasks: [...] }`. `only` filters by `pending | in_progress | completed` (synonyms like `todo`, `done` also accepted).
-- write_progress: Replace or add structured tasks `{ name, content, mode? }` where `content` is a list of task objects and `mode` is `replace` (default) or `add`.
+- read_progress: Read structured tasks for a project `{ name, only? }`. Returns JSON `{ tasks: [...], markdown: "..." }` where `markdown` is a nested, human-friendly outline. `only` filters by `pending | in_progress | completed | archived` (synonyms accepted). By default, archived tasks are excluded; they are included only if `only` contains `archived`.
+- write_progress: Replace or add structured tasks `{ name, content, mode? }` where `content` is a list of task objects and `mode` is `replace` (default) or `add`. `status` accepts `pending|in_progress|completed|archived`.
 - progress_add: Add one or more structured tasks `{ name, item }` where `item` is a task object or a list of task objects. Duplicate `task_id` are not added; response includes `exists` (single) or `skipped` (bulk via `exists`).
-- progress_set_state: Set task state by `task_id` (8-char) or by matching `task_info` substring `{ name, match, state }`. Response includes `notMatched`.
+- progress_set_state: Update tasks by `task_id` (8-char) or by matching `task_info` substring `{ name, match, state?, task_info?, parent_id?, extra_note? }`. You can change state and/or any of the fields. If you set `state` to `archived` or `completed`, all children of each matched task (where `parent_id` equals the changed task’s `task_id`) are automatically updated to that state, recursively.
+  - Lock rules: When a task (or any ancestor) is `completed` or `archived`, no edits are allowed to that task or its descendants, except unlocking the task itself to `pending` or `in_progress` (and only if none of its ancestors are locked). Unlocking a parent propagates to its descendants.
 - progress_mark_complete: Mark tasks completed by `task_id` or text substring `{ name, match }`. Response includes `notMatched`.
 - generate_task_ids: Generate N unique 8-character IDs not used by this user `{ count? }` (default 5). Returns `{ ids: ["abcd1234", ...] }`.
 - get_agents_md_examples: Returns examples from `example_agent_md.json`; optional `only` filter; always includes `the_art_of_writing_agents_md`.

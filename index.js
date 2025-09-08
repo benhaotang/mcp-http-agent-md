@@ -504,7 +504,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'scratchpad_subagent',
-        description: 'Start a subagent (Gemini) to work on a scratchpad task. Required: name (project), scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"). Available tools the subagent can use: grounding (search), crawling (web fetch), code_execution (run code). Provide tool as "all" or a subset of [grounding, crawling, code_execution]. The server auto-appends the scratchpad\'s common_memory to the prompt when present. The subagent appends its answer to the task\'s scratchpad and logs any sources/code it used into comments.',
+        description: 'Start a subagent (Gemini) to work on a scratchpad task. Required: name (project), scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"). Available tools the subagent can use: grounding (search), crawling (web fetch), code_execution (run code). Provide tool as "all" or a subset of [grounding, crawling, code_execution]. The server auto-appends the scratchpad\'s common_memory to the prompt when present. The subagent appends its answer to the task\'s scratchpad and logs any sources/code it used into comments. Note that the subagent\'s context is isolated, they can ONLY see common_memory without anyother knowledge of the scratchpad or the project, so remember to update common_memory if required.',
         inputSchema: {
           type: 'object',
           properties: {

@@ -114,7 +114,10 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
 
 Scratchpad (ephemeral, per-session) tools:
 - scratchpad_initialize: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. `tasks` is up to 6 items `{ task_id, status: 'open'|'complete', task_info, scratchpad?, comments? }`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
-- review_scratchpad: Review a scratchpad by `{ name, scratchpad_id }`. Returns `{ tasks, common_memory }`.
+- review_scratchpad: Review a scratchpad by `{ name, scratchpad_id, IncludeCM?, IncludeTk? }`.
+  - IncludeCM: boolean; when `true`, include `common_memory` in the output.
+  - IncludeTk: array of strings; filters tasks by `task_id` (case-insensitive exact) or `task_info` (case-insensitive substring). When provided, only matching tasks are returned.
+  - If neither `IncludeCM` nor `IncludeTk` is provided, returns both `tasks` and `common_memory` (backwards-compatible default). Otherwise, includes only the requested fields; if `IncludeTk` is omitted, no `tasks` are returned.
 - scratchpad_update_task: Update existing scratchpad tasks by `task_id` `{ name, scratchpad_id, updates }`, where `updates` is an array of `{ task_id, status?, task_info?, scratchpad?, comments? }`. Returns `{ updated, notFound, scratchpad }`.
 - scratchpad_append_common_memory: Append to the scratchpad’s shared memory `{ name, scratchpad_id, append }` where `append` is a string or array of strings. Returns the updated scratchpad.
 

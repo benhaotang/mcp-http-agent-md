@@ -77,7 +77,10 @@ Expose these tools via MCP CallTool (Streamable HTTP):
 
 Scratchpad (ephemeral) tools:
 - `scratchpad_initialize`: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
-- `review_scratchpad`: Review a scratchpad `{ name, scratchpad_id }`. Returns `{ tasks, common_memory }`.
+- `review_scratchpad`: Review a scratchpad `{ name, scratchpad_id, IncludeCM?, IncludeTk? }`.
+  - `IncludeCM` (boolean): include `common_memory` when `true`.
+  - `IncludeTk` (array of strings): include only matching tasks; matches `task_id` (case‑insensitive exact) or `task_info` substring (case‑insensitive).
+  - If neither option is provided, outputs both `tasks` and `common_memory`. Otherwise, returns only the requested fields; if `IncludeTk` is omitted, tasks are not returned.
 - `scratchpad_update_task`: Update existing scratchpad tasks by `task_id` `{ name, scratchpad_id, updates }`, where `updates` is an array of `{ task_id, status?, task_info?, scratchpad?, comments? }`. Returns `{ updated, notFound, scratchpad }`.
 - `scratchpad_append_common_memory`: Append to shared scratchpad memory `{ name, scratchpad_id, append }` (string or array). Returns updated scratchpad.
 

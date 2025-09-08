@@ -708,12 +708,18 @@ function buildMcpServer(userId) {
       },
       {
         name: 'review_scratchpad',
-        description: 'Read‑only view of a scratchpad for a one‑off task. Provide (project name, scratchpad_id). Returns the current tasks (max 6) and the append‑only common_memory so you can review steps and notes you take for solving this immediate problem.',
+        description: 'Read‑only view of a scratchpad for a one‑off task. Provide (project name, scratchpad_id). By default returns tasks (max 6) and common_memory. Optionally control output with IncludeCM (boolean) and IncludeTk (array of task_id or task_info needles). If neither is provided, outputs everything; otherwise includes only requested fields and filters tasks.',
         inputSchema: {
           type: 'object',
           properties: {
             name: { type: 'string' },
-            scratchpad_id: { type: 'string' }
+            scratchpad_id: { type: 'string' },
+            IncludeCM: { type: 'boolean', description: 'When true, include common_memory in the response. If omitted and IncludeTk is set, common_memory is omitted.' },
+            IncludeTk: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Array of task_id values or task_info needles to include. Matches task_id (case-insensitive) or task_info substring (case-insensitive). If omitted, no tasks are returned unless IncludeCM and IncludeTk are both omitted.'
+            }
           },
           required: ['name','scratchpad_id']
         }
@@ -923,14 +929,45 @@ function buildMcpServer(userId) {
         }
       }
       case 'review_scratchpad': {
-        const { name: projName, scratchpad_id } = args || {};
+        const { name: projName, scratchpad_id, IncludeCM, IncludeTk } = args || {};
         try {
           if (!validateProjectName(projName)) {
             return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
           }
           const sp = await dbGetScratchpad(userId, projName, String(scratchpad_id || ''));
-          // Return only tasks and common_memory per spec
-          return okText(JSON.stringify({ tasks: sp.tasks || [], common_memory: sp.common_memory || '' }));
+
+          // If neither IncludeCM nor IncludeTk is provided, return full content (backwards-compatible default)
+          const includeAllByDefault = (typeof IncludeCM === 'undefined' && typeof IncludeTk === 'undefined');
+          if (includeAllByDefault) {
+            return okText(JSON.stringify({ tasks: sp.tasks || [], common_memory: sp.common_memory || '' }));
+          }
+
+          const result = {};
+
+          // Conditionally include common_memory
+          if (IncludeCM === true) {
+            result.common_memory = sp.common_memory || '';
+          }
+
+          // Conditionally include filtered tasks
+          if (Array.isArray(IncludeTk)) {
+            const needles = IncludeTk.map(v => String(v || '')).filter(Boolean).map(v => v.toLowerCase());
+            const hasNeedles = needles.length > 0;
+            const tasks = Array.isArray(sp.tasks) ? sp.tasks : [];
+            if (hasNeedles) {
+              const filtered = tasks.filter(t => {
+                const tid = String(t?.task_id || '').toLowerCase();
+                const info = String(t?.task_info || '').toLowerCase();
+                // Match task_id equality or task_info substring (case-insensitive)
+                return needles.some(n => tid === n || (info && info.includes(n)));
+              });
+              result.tasks = filtered;
+            } else {
+              result.tasks = [];
+            }
+          }
+
+          return okText(JSON.stringify(result));
         } catch (err) {
           const msg = String(err?.message || err || 'review failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : (/scratchpad not found/i.test(msg) ? 'scratchpad_not_found' : 'review_failed');

@@ -24,6 +24,15 @@ cp .env.example .env
 ```
 Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
 
+External AI (optional): set in `.env` when using the subagent tools.
+```
+USE_EXTERNAL_AI=true
+AI_API_TYPE=google
+AI_API_KEY=...   # required when enabled
+AI_MODEL="gemini-2.5-pro"  # optional
+AI_TIMEOUT=120              # optional
+```
+
 ## Docker
 
 - From GitHub Package: `docker pull ghcr.io/benhaotang/mcp-http-agent-md:main`
@@ -107,6 +116,10 @@ Scratchpad (ephemeral, per-session) tools:
 - review_scratchpad: Review a scratchpad by `{ name, scratchpad_id }`. Returns `{ tasks, common_memory }`.
 - scratchpad_update_task: Update existing scratchpad tasks by `task_id` `{ name, scratchpad_id, updates }`, where `updates` is an array of `{ task_id, status?, task_info?, scratchpad?, comments? }`. Returns `{ updated, notFound, scratchpad }`.
 - scratchpad_append_common_memory: Append to the scratchpad’s shared memory `{ name, scratchpad_id, append }` where `append` is a string or array of strings. Returns the updated scratchpad.
+
+External AI subagent (shown only when `USE_EXTERNAL_AI` is not `false`):
+- scratchpad_subagent: Start a subagent to work on a scratchpad task `{ name, scratchpad_id, task_id, prompt, sys_prompt?, tool? }`. Chooses tools from `[grounding, crawling, code_execution]`. Auto‑appends `common_memory` to the prompt. May return early with `status: in_progress` and a `run_id`.
+- scratchpad_subagent_status: Check run status `{ name, run_id }`. Returns final status, or polls for up to ~25s when still running.
 
 Notes:
 - Scratchpads are transient like RAM; no list/delete tools are provided here. An external cleanup tool is currently "expected" to remove them after the session.

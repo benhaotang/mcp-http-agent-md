@@ -87,10 +87,69 @@ async function run() {
       'read_agent','write_agent','read_progress',
       'progress_add','progress_set_new_state',
       'get_agents_md_best_practices_and_examples','generate_task_ids',
+      'list_project_logs','revert_project',
       // Scratchpad tools
       'scratchpad_initialize','review_scratchpad','scratchpad_update_task','scratchpad_append_common_memory'
     ];
     for (const n of expected) assert(toolNames.includes(n), `Missing tool: ${n}`);
+
+    // --- Versioning tests ---
+    const vproj = `verproj_${Date.now()}`;
+    const vproj2 = `${vproj}_renamed`;
+    // init_project should create an initial commit and return hash
+    const vInitRes = await client.callTool({ name: 'init_project', arguments: { name: vproj } });
+    const vInit = JSON.parse(vInitRes.content?.[0]?.text || '{}');
+    assert(vInit.hash && typeof vInit.hash === 'string', 'init_project should return initial hash');
+    // logs should have the init commit
+    const vLogs1Res = await client.callTool({ name: 'list_project_logs', arguments: { name: vproj } });
+    const vLogs1 = JSON.parse(vLogs1Res.content?.[0]?.text || '{}');
+    assert(Array.isArray(vLogs1.logs) && vLogs1.logs.length >= 1, 'logs should include at least the init commit');
+    const initHash = vLogs1.logs[0].hash;
+    assert(vLogs1.logs[0].message === 'init', 'first commit message should be init');
+    // write_agent should return a new hash and append a log entry
+    const vWriteRes = await client.callTool({ name: 'write_agent', arguments: { name: vproj, content: '# agent\nHello V1', comment: 'write 1' } });
+    const vWrite = JSON.parse(vWriteRes.content?.[0]?.text || '{}');
+    assert(vWrite.hash && typeof vWrite.hash === 'string', 'write_agent should return hash');
+    const vLogs2 = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { name: vproj } })).content?.[0]?.text || '{}');
+    assert(vLogs2.logs.length === vLogs1.logs.length + 1, 'logs length should increment after write_agent');
+    assert(vLogs2.logs[vLogs2.logs.length - 1].message === 'write 1', 'last commit should be write 1');
+    // progress_add with comment should return hash and log
+    const pRoot = { task_id: 'p0p0p0p0', task_info: 'Root' };
+    const pChild = { task_id: 'c0c0c0c0', task_info: 'Child', parent_id: 'p0p0p0p0' };
+    const vAddRes = await client.callTool({ name: 'progress_add', arguments: { name: vproj, item: [pRoot, pChild], comment: 'add tasks' } });
+    const vAdd = JSON.parse(vAddRes.content?.[0]?.text || '{}');
+    assert(vAdd.hash && typeof vAdd.hash === 'string', 'progress_add should return hash when adding new tasks');
+    const vLogs3 = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { name: vproj } })).content?.[0]?.text || '{}');
+    assert(vLogs3.logs.length === vLogs2.logs.length + 1, 'logs length should increment after progress_add');
+    assert(vLogs3.logs[vLogs3.logs.length - 1].message === 'add tasks', 'last commit should be add tasks');
+    // progress_set_new_state should return hash and log
+    const vSetRes = await client.callTool({ name: 'progress_set_new_state', arguments: { name: vproj, match: ['p0p0p0p0'], state: 'completed', comment: 'set status' } });
+    const vSet = JSON.parse(vSetRes.content?.[0]?.text || '{}');
+    assert(vSet.hash && typeof vSet.hash === 'string', 'progress_set_new_state should return hash when changes occur');
+    const vLogs4 = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { name: vproj } })).content?.[0]?.text || '{}');
+    assert(vLogs4.logs.length === vLogs3.logs.length + 1, 'logs length should increment after progress_set_new_state');
+    assert(vLogs4.logs[vLogs4.logs.length - 1].message === 'set status', 'last commit should be set status');
+    // rename_project should return hash and log under the new name
+    const vRenameRes = await client.callTool({ name: 'rename_project', arguments: { oldName: vproj, newName: vproj2, comment: 'rename 1' } });
+    const vRename = JSON.parse(vRenameRes.content?.[0]?.text || '{}');
+    assert(vRename.hash && typeof vRename.hash === 'string', 'rename_project should return hash');
+    const vLogs5 = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { name: vproj2 } })).content?.[0]?.text || '{}');
+    assert(vLogs5.logs.length === vLogs4.logs.length + 1, 'logs length should increment after rename_project');
+    assert(vLogs5.logs[vLogs5.logs.length - 1].message === 'rename 1', 'last commit should be rename 1');
+    // Revert to init: should trim history and reset state
+    const revRes = await client.callTool({ name: 'revert_project', arguments: { name: vproj2, hash: initHash } });
+    const rev = JSON.parse(revRes.content?.[0]?.text || '{}');
+    assert(rev.hash === initHash, 'revert_project should return reverted hash');
+    const vLogsAfterRevert = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { name: vproj2 } })).content?.[0]?.text || '{}');
+    assert(vLogsAfterRevert.logs.length === 1, 'history should be trimmed to the reverted commit');
+    assert(vLogsAfterRevert.logs[0].hash === initHash, 'first commit after revert should be init');
+    // Agent content should be reset (no longer contains our written text)
+    const readAfterRevert = await client.callTool({ name: 'read_agent', arguments: { name: vproj2 } });
+    const agentAfterRevert = readAfterRevert.content?.[0]?.text || '';
+    assert(!agentAfterRevert.includes('Hello V1'), 'Agent content should be reverted');
+    // Tasks should be empty after revert to init
+    const tasksAfterRevert = JSON.parse((await client.callTool({ name: 'read_progress', arguments: { name: vproj2 } })).content?.[0]?.text || '{}');
+    assert(Array.isArray(tasksAfterRevert.tasks) && tasksAfterRevert.tasks.length === 0, 'Tasks should be empty after revert to init');
 
     // Unique project name
     const name = `testproj_${Date.now()}`;

@@ -46,6 +46,8 @@ async function openDb() {
       name TEXT NOT NULL,
       agent_json TEXT NOT NULL,
       progress_json TEXT NOT NULL,
+      hash TEXT,
+      hash_history TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT,
       UNIQUE(user_id, name),
@@ -81,9 +83,53 @@ async function openDb() {
       FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_scratchpads_user_project ON scratchpads(user_id, project_id);
+    -- Backups table for versioning
+    CREATE TABLE IF NOT EXISTS backups (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      hash TEXT NOT NULL,
+      message TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(user_id, project_id, hash),
+      FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_backups_user_project ON backups(user_id, project_id);
   `);
   // Enable foreign key constraints in SQLite (helps catch bad user_id early)
   try { db.exec('PRAGMA foreign_keys = ON;'); } catch {}
+  // Lightweight migrations for existing DBs: add columns hash/hash_history if missing
+  try {
+    const rs = db.exec("PRAGMA table_info('user_projects')");
+    const cols = new Set((rs && rs[0] && rs[0].values ? rs[0].values : []).map(r => String(r[1])));
+    if (!cols.has('hash')) {
+      try {
+        db.exec("ALTER TABLE user_projects ADD COLUMN hash TEXT");
+      } catch (err) {
+        console.error("Failed to add 'hash' column to user_projects:", err);
+      }
+      // Verify column was added
+      const rs2 = db.exec("PRAGMA table_info('user_projects')");
+      const cols2 = new Set((rs2 && rs2[0] && rs2[0].values ? rs2[0].values : []).map(r => String(r[1])));
+      if (!cols2.has('hash')) {
+        console.error("Migration failed: 'hash' column still missing from user_projects after ALTER TABLE.");
+      }
+    }
+    if (!cols.has('hash_history')) {
+      try {
+        db.exec("ALTER TABLE user_projects ADD COLUMN hash_history TEXT");
+      } catch (err) {
+        console.error("Failed to add 'hash_history' column to user_projects:", err);
+      }
+      // Verify column was added
+      const rs3 = db.exec("PRAGMA table_info('user_projects')");
+      const cols3 = new Set((rs3 && rs3[0] && rs3[0].values ? rs3[0].values : []).map(r => String(r[1])));
+      if (!cols3.has('hash_history')) {
+        console.error("Migration failed: 'hash_history' column still missing from user_projects after ALTER TABLE.");
+      }
+    }
+  } catch {}
   dbInstance = db;
   return dbInstance;
 }
@@ -222,6 +268,26 @@ export async function getProjectByName(userId, name) {
   return { id: r.id, name: r.name };
 }
 
+export async function getProjectFull(userId, name) {
+  const db = await openDb();
+  const stmt = db.prepare('SELECT id, name, agent_json, progress_json, hash, hash_history, created_at, updated_at FROM user_projects WHERE user_id = $u AND name = $n');
+  stmt.bind({ $u: userId, $n: name });
+  const ok = stmt.step();
+  if (!ok) { stmt.free(); return null; }
+  const r = stmt.getAsObject();
+  stmt.free();
+  return {
+    id: r.id,
+    name: r.name,
+    agent_json: r.agent_json || JSON.stringify({ content: '' }),
+    progress_json: r.progress_json || JSON.stringify({ content: '' }),
+    hash: r.hash || null,
+    hash_history: r.hash_history || null,
+    created_at: r.created_at,
+    updated_at: r.updated_at || null,
+  };
+}
+
 export async function listUserTaskIds(userId) {
   const db = await openDb();
   const stmt = db.prepare('SELECT task_id FROM project_tasks WHERE user_id = $u');
@@ -313,6 +379,188 @@ export async function writeDoc(userId, name, which, content) {
 }
 
 export const _internal = { openDb, persistDb };
+
+// ---------------- Versioning APIs ----------------
+
+function safeParseJson(s, fallback) {
+  try { return JSON.parse(String(s || '')); } catch { return fallback; }
+}
+
+function canonicalize(obj) {
+  const seen = new WeakSet();
+  function sortValue(v) {
+    if (v && typeof v === 'object') {
+      if (seen.has(v)) return null;
+      seen.add(v);
+      if (Array.isArray(v)) return v.map(sortValue);
+      const out = {};
+      Object.keys(v).sort().forEach(k => { out[k] = sortValue(v[k]); });
+      return out;
+    }
+    return v;
+  }
+  return JSON.stringify(sortValue(obj));
+}
+
+function computeHashForSnapshot(snapshotObj) {
+  const json = canonicalize(snapshotObj);
+  return crypto.createHash('sha256').update(json).digest('hex').slice(0, 40);
+}
+
+async function buildProjectSnapshot(db, { userId, projectRow }) {
+  const projId = projectRow.id;
+  const tasks = [];
+  const q = db.prepare('SELECT task_id, task_info, parent_id, status, extra_note, created_at, updated_at FROM project_tasks WHERE user_id = $u AND project_id = $p ORDER BY created_at ASC');
+  q.bind({ $u: userId, $p: projId });
+  while (q.step()) {
+    const r = q.getAsObject();
+    tasks.push({
+      task_id: String(r.task_id),
+      task_info: String(r.task_info || ''),
+      parent_id: r.parent_id || null,
+      status: String(r.status || 'pending'),
+      extra_note: r.extra_note || null,
+      created_at: r.created_at,
+      updated_at: r.updated_at || null,
+    });
+  }
+  q.free();
+  const agent = safeParseJson(projectRow.agent_json || '{}', {});
+  const progress = safeParseJson(projectRow.progress_json || '{}', {});
+  const snapshot = {
+    user_id: userId,
+    project_id: projId,
+    name: projectRow.name,
+    agent,
+    progress,
+    tasks,
+    meta: {
+      created_at: projectRow.created_at,
+      updated_at: projectRow.updated_at || null,
+    },
+  };
+  return snapshot;
+}
+
+export async function ensureProjectVersionInitialized(userId, name) {
+  const db = await openDb();
+  const proj = await getProjectFull(userId, name);
+  if (!proj) throw new Error('project not found');
+  if (proj.hash && proj.hash.trim()) return proj.hash;
+  const now = new Date().toISOString();
+  const snapshot = await buildProjectSnapshot(db, { userId, projectRow: proj });
+  const hash = computeHashForSnapshot(snapshot);
+  const ins = db.prepare('INSERT INTO backups (id, user_id, project_id, hash, message, snapshot_json, created_at) VALUES ($id, $u, $p, $h, $m, $s, $c)');
+  ins.bind({ $id: newUserId(), $u: userId, $p: proj.id, $h: hash, $m: 'init', $s: JSON.stringify(snapshot), $c: now });
+  ins.step();
+  ins.free();
+  const history = [hash];
+  const upd = db.prepare('UPDATE user_projects SET hash = $h, hash_history = $hh, updated_at = $now WHERE id = $pid');
+  upd.bind({ $h: hash, $hh: JSON.stringify(history), $now: now, $pid: proj.id });
+  upd.step();
+  upd.free();
+  await persistDb();
+  return hash;
+}
+
+export async function createProjectBackup(userId, name, message) {
+  const db = await openDb();
+  // Ensure exists and initialized
+  const proj0 = await getProjectFull(userId, name);
+  if (!proj0) throw new Error('project not found');
+  if (!proj0.hash) await ensureProjectVersionInitialized(userId, name);
+  const proj = await getProjectFull(userId, name);
+  const now = new Date().toISOString();
+  const snapshot = await buildProjectSnapshot(db, { userId, projectRow: proj });
+  const hash = computeHashForSnapshot(snapshot);
+  const ins = db.prepare('INSERT INTO backups (id, user_id, project_id, hash, message, snapshot_json, created_at) VALUES ($id, $u, $p, $h, $m, $s, $c)');
+  ins.bind({ $id: newUserId(), $u: userId, $p: proj.id, $h: hash, $m: (String(message || '').trim() || `${new Date().toISOString()} auto`), $s: JSON.stringify(snapshot), $c: now });
+  ins.step();
+  ins.free();
+  let history = [];
+  try { history = JSON.parse(proj.hash_history || '[]'); if (!Array.isArray(history)) history = []; } catch { history = []; }
+  history.push(hash);
+  const upd = db.prepare('UPDATE user_projects SET hash = $h, hash_history = $hh, updated_at = $now WHERE id = $pid');
+  upd.bind({ $h: hash, $hh: JSON.stringify(history), $now: now, $pid: proj.id });
+  upd.step();
+  upd.free();
+  await persistDb();
+  return hash;
+}
+
+export async function listProjectLogs(userId, name) {
+  const db = await openDb();
+  const proj = await getProjectFull(userId, name);
+  if (!proj) throw new Error('project not found');
+  if (!proj.hash) await ensureProjectVersionInitialized(userId, name);
+  const cur = await getProjectFull(userId, name);
+  let history = [];
+  try { history = JSON.parse(cur.hash_history || '[]'); if (!Array.isArray(history)) history = []; } catch { history = []; }
+  const all = new Map();
+  const sel = db.prepare('SELECT hash, message, created_at FROM backups WHERE user_id = $u AND project_id = $p');
+  sel.bind({ $u: userId, $p: cur.id });
+  while (sel.step()) {
+    const r = sel.getAsObject();
+    all.set(String(r.hash), { hash: String(r.hash), message: String(r.message || ''), created_at: r.created_at });
+  }
+  sel.free();
+  return history.map(h => all.get(String(h))).filter(Boolean);
+}
+
+export async function revertProjectToHash(userId, name, targetHash) {
+  const db = await openDb();
+  const proj = await getProjectFull(userId, name);
+  if (!proj) throw new Error('project not found');
+  const sel = db.prepare('SELECT snapshot_json FROM backups WHERE user_id = $u AND project_id = $p AND hash = $h');
+  sel.bind({ $u: userId, $p: proj.id, $h: targetHash });
+  const ok = sel.step();
+  if (!ok) { sel.free(); throw new Error('hash_not_found'); }
+  const row = sel.getAsObject();
+  sel.free();
+  let snapshot;
+  try { snapshot = JSON.parse(row.snapshot_json || '{}'); } catch { throw new Error('invalid_snapshot'); }
+  const now = new Date().toISOString();
+  // Update project agent/progress to snapshot versions
+  const updProj = db.prepare('UPDATE user_projects SET agent_json = $a, progress_json = $p, hash = $h, updated_at = $now WHERE id = $pid');
+  updProj.bind({ $a: JSON.stringify(snapshot.agent || {}), $p: JSON.stringify(snapshot.progress || {}), $h: targetHash, $now: now, $pid: proj.id });
+  updProj.step();
+  updProj.free();
+  // Replace tasks with snapshot tasks
+  const del = db.prepare('DELETE FROM project_tasks WHERE user_id = $u AND project_id = $p');
+  del.bind({ $u: userId, $p: proj.id });
+  del.step();
+  del.free();
+  const ins = db.prepare('INSERT INTO project_tasks (id, user_id, project_id, task_id, task_info, parent_id, status, extra_note, created_at, updated_at) VALUES ($id, $u, $p, $tid, $ti, $pid, $st, $en, $c, $uAt)');
+  const tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
+  for (const t of tasks) {
+    ins.bind({
+      $id: newUserId(),
+      $u: userId,
+      $p: proj.id,
+      $tid: String(t.task_id),
+      $ti: String(t.task_info || ''),
+      $pid: t.parent_id || null,
+      $st: String(t.status || 'pending'),
+      $en: t.extra_note || null,
+      $c: t.created_at || now,
+      $uAt: t.updated_at || null,
+    });
+    ins.step();
+    ins.reset();
+  }
+  ins.free();
+  // Trim hash_history to target
+  let history = [];
+  try { history = JSON.parse(proj.hash_history || '[]'); if (!Array.isArray(history)) history = []; } catch { history = []; }
+  const idx = history.indexOf(targetHash);
+  const newHist = idx >= 0 ? history.slice(0, idx + 1) : [targetHash];
+  const updHist = db.prepare('UPDATE user_projects SET hash_history = $hh, updated_at = $now WHERE id = $pid');
+  updHist.bind({ $hh: JSON.stringify(newHist), $now: now, $pid: proj.id });
+  updHist.step();
+  updHist.free();
+  await persistDb();
+  return { hash: targetHash };
+}
 
 // ---------------- Structured Tasks APIs ----------------
 

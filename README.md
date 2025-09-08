@@ -2,7 +2,7 @@
 
 ![](https://badge.mcpx.dev?type=server&features=tools 'MCP server with features')
 
-Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint.
+Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (currently Gemini with grounding) for solving focused tasks.
 
 Co-authored by Codex (OpenAI).
 
@@ -42,9 +42,10 @@ AI_TIMEOUT=120              # optional
       -p 3000:3000 \
       -e MAIN_API_KEY=change-me \
       -e HOST=0.0.0.0 \
-      -v $(pwd)/data:/app/data \
+      -v $(pwd)/data:/app/data\
       ghcr.io/benhaotang/mcp-http-agent-md:v0.0.3
   ```
+  - Add `-e AI_API_KEY=xxx -e USE_EXTERNAL_AI=true` for using subagents.
 - Local Build: `docker build -t mcp-http-agent-md .`
 - Admin API: `http://localhost:3000/auth` (Bearer `MAIN_API_KEY`), generate a `USER_API_KEY` first, see `## Auth`
 - MCP endpoint: `POST http://localhost:3000/mcp?apiKey=USER_API_KEY`

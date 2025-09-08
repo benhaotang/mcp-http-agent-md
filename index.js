@@ -231,6 +231,11 @@ function filterProgressContent(md, only) {
 // ---------- Unified Diff Patch (git-style) helper ----------
 // Minimal unified diff applier for single-file patches.
 // Supports headers (diff --git, index, ---/+++), and @@ hunks with ' ', '+', '-' lines.
+// Strictly validates that each hunk's header counts match the number of lines provided:
+// - oldCount === (#context ' ' + #deletes '-')
+// - newCount === (#context ' ' + #adds '+')
+// Also enforces the "-- " rule for deleting markdown bullets that literally begin with "- ":
+// deletion lines must start with "-- " to include the literal dash in the deleted content.
 function applyUnifiedDiff(oldText, diffText) {
   const oldLines = String(oldText ?? '').split(/\n/);
   const diffLines = String(diffText ?? '').split(/\n/);
@@ -264,6 +269,23 @@ function applyUnifiedDiff(oldText, diffText) {
           hunkLines.push(hl);
         }
         i++;
+      }
+      // Validate hunk counts strictly before applying
+      let ctxCount = 0, addCount = 0, delCount = 0;
+      for (const hl of hunkLines) {
+        if (!hl || typeof hl !== 'string') continue;
+        const p = hl[0];
+        if (p === ' ') ctxCount++;
+        else if (p === '+') addCount++;
+        else if (p === '-') delCount++;
+      }
+      const oldSpan = ctxCount + delCount;
+      const newSpan = ctxCount + addCount;
+      if (oldSpan !== oldCount || newSpan !== newCount) {
+        throw new Error(
+          `Patch hunk header/count mismatch at @@ -${oldStart},${oldCount} +${newStart},${newCount} @@: ` +
+          `have context=${ctxCount}, deletes=${delCount}, adds=${addCount}`
+        );
       }
       hunks.push({ oldStart, oldCount, newStart, newCount, lines: hunkLines });
       continue;
@@ -329,15 +351,16 @@ function applyUnifiedDiff(oldText, diffText) {
         const got = noCR(oldLines[origIndex]);
         const want = noCR(text);
         if (got !== want) {
-          // Heuristic: many generators forget the extra '-' when deleting a markdown bullet.
-          // If the file has '-' + want, treat this as a context-keep (not a deletion).
-          if (got === '-' + want) {
-            // Keep the line as-is instead of deleting
-            out.push(got);
-            origIndex++;
-          } else {
-            throw new Error(`Patch delete mismatch: expected "${text}" got "${got}"`);
+          // Enforce the special rule for markdown bullets that begin with "- ".
+          // If the target line literally starts with "- " but the diff line omitted the
+          // extra dash (i.e., diff line started with "- " instead of "-- "), instruct the caller.
+          if (got.startsWith('- ') && (' ' + got.slice(2) === want || got.slice(1) === want)) {
+            throw new Error(
+              `Patch delete mismatch: deleting a markdown bullet must use "-- " (delete marker + literal dash). ` +
+              `Provided line "${text}" does not include the literal dash; expected "-${text}"`
+            );
           }
+          throw new Error(`Patch delete mismatch: expected "${text}" got "${got}"`);
         } else {
           origIndex++;
         }

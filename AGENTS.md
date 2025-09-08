@@ -38,6 +38,7 @@ Minimal Node.js ESM app with Express + MCP Streamable HTTP:
 - `index.js` — Express app, MCP server (Streamable HTTP) at `POST /mcp`; defines and wires all MCP tools; mounts admin router under `/auth`.
 - `src/db.js` — SQLite (sql.js) persistence, schema and CRUD for users, projects, and structured tasks (including cascade + lock rules).
 - `src/auth.js` — Admin auth middleware (Bearer `MAIN_API_KEY`), user API key auth for MCP, and `/auth` routes.
+- `src/env.js` - Read and load .env file.
 - `example_agent_md.json` — Best practices and example snippets for AGENTS.md returned by the examples tool.
 - `data/` — Persisted database directory (`app.sqlite`).
 - `test.js` — Smoke test using the official MCP client transport to exercise tools end-to-end.

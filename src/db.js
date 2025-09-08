@@ -96,6 +96,19 @@ async function openDb() {
       FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_backups_user_project ON backups(user_id, project_id);
+    -- Subagent run statuses
+    CREATE TABLE IF NOT EXISTS subagent_runs (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      status TEXT NOT NULL, -- pending | in_progress | success | failure
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      UNIQUE(user_id, project_id, run_id),
+      FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_runs_user_project ON subagent_runs(user_id, project_id);
   `);
   // Enable foreign key constraints in SQLite (helps catch bad user_id early)
   try { db.exec('PRAGMA foreign_keys = ON;'); } catch {}
@@ -967,4 +980,54 @@ export async function appendScratchpadCommonMemory(userId, projectName, scratchp
   upd.free();
   await persistDb();
   return await getScratchpad(userId, projectName, scratchpadId);
+}
+
+// ---------------- Subagent Runs APIs ----------------
+
+function normalizeRunStatus(s) {
+  const v = String(s || '').toLowerCase().trim();
+  if (['pending','in_progress','success','failure'].includes(v)) return v;
+  return 'pending';
+}
+
+export async function createSubagentRun(userId, projectName, runId, status = 'pending') {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const now = new Date().toISOString();
+  const stmt = db.prepare(`
+    INSERT INTO subagent_runs (id, user_id, project_id, run_id, status, created_at)
+    VALUES ($id, $u, $p, $rid, $st, $now)
+  `);
+  stmt.bind({ $id: newUserId(), $u: userId, $p: proj.id, $rid: String(runId), $st: normalizeRunStatus(status), $now: now });
+  stmt.step();
+  stmt.free();
+  await persistDb();
+  return { run_id: String(runId), status: normalizeRunStatus(status) };
+}
+
+export async function setSubagentRunStatus(userId, projectName, runId, status) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const now = new Date().toISOString();
+  const stmt = db.prepare('UPDATE subagent_runs SET status = $st, updated_at = $now WHERE user_id = $u AND project_id = $p AND run_id = $rid');
+  stmt.bind({ $st: normalizeRunStatus(status), $now: now, $u: userId, $p: proj.id, $rid: String(runId) });
+  stmt.step();
+  stmt.free();
+  await persistDb();
+  return await getSubagentRun(userId, projectName, runId);
+}
+
+export async function getSubagentRun(userId, projectName, runId) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const sel = db.prepare('SELECT run_id, status, created_at, updated_at FROM subagent_runs WHERE user_id = $u AND project_id = $p AND run_id = $rid');
+  sel.bind({ $u: userId, $p: proj.id, $rid: String(runId) });
+  const ok = sel.step();
+  if (!ok) { sel.free(); return null; }
+  const r = sel.getAsObject();
+  sel.free();
+  return { run_id: r.run_id, status: r.status, created_at: r.created_at, updated_at: r.updated_at || null };
 }

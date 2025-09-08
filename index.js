@@ -104,7 +104,9 @@ function userOps(userId) {
       try {
         const hash = await vcOnInitProject(userId, name);
         res.hash = hash;
-      } catch {}
+      } catch (err) {
+        console.error(`Failed to initialize versioning for project "${name}":`, err);
+      }
       return res;
     },
     async removeProject(name) {

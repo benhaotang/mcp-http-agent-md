@@ -103,8 +103,32 @@ async function openDb() {
   try {
     const rs = db.exec("PRAGMA table_info('user_projects')");
     const cols = new Set((rs && rs[0] && rs[0].values ? rs[0].values : []).map(r => String(r[1])));
-    if (!cols.has('hash')) { try { db.exec("ALTER TABLE user_projects ADD COLUMN hash TEXT"); } catch {} }
-    if (!cols.has('hash_history')) { try { db.exec("ALTER TABLE user_projects ADD COLUMN hash_history TEXT"); } catch {} }
+    if (!cols.has('hash')) {
+      try {
+        db.exec("ALTER TABLE user_projects ADD COLUMN hash TEXT");
+      } catch (err) {
+        console.error("Failed to add 'hash' column to user_projects:", err);
+      }
+      // Verify column was added
+      const rs2 = db.exec("PRAGMA table_info('user_projects')");
+      const cols2 = new Set((rs2 && rs2[0] && rs2[0].values ? rs2[0].values : []).map(r => String(r[1])));
+      if (!cols2.has('hash')) {
+        console.error("Migration failed: 'hash' column still missing from user_projects after ALTER TABLE.");
+      }
+    }
+    if (!cols.has('hash_history')) {
+      try {
+        db.exec("ALTER TABLE user_projects ADD COLUMN hash_history TEXT");
+      } catch (err) {
+        console.error("Failed to add 'hash_history' column to user_projects:", err);
+      }
+      // Verify column was added
+      const rs3 = db.exec("PRAGMA table_info('user_projects')");
+      const cols3 = new Set((rs3 && rs3[0] && rs3[0].values ? rs3[0].values : []).map(r => String(r[1])));
+      if (!cols3.has('hash_history')) {
+        console.error("Migration failed: 'hash_history' column still missing from user_projects after ALTER TABLE.");
+      }
+    }
   } catch {}
   dbInstance = db;
   return dbInstance;

@@ -66,6 +66,14 @@ Expose these tools via MCP CallTool (Streamable HTTP):
 - `generate_task_ids`: Generate N unique 8‑char IDs not used by this user `{ count? }`.
 - `get_agents_md_best_practices_and_examples`: Best‑practices + examples from `example_agent_md.json`. Default returns only `the_art_of_writing_agents_md`. Use `include='all'` or a string/array to filter by usecase/title.
 
+Scratchpad (ephemeral) tools:
+- `scratchpad_initialize`: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
+- `review_scratchpad`: Review a scratchpad `{ name, scratchpad_id }`. Returns `{ tasks, common_memory }`.
+- `scratchpad_update_task`: Update existing scratchpad tasks by `task_id` `{ name, scratchpad_id, updates }`, where `updates` is an array of `{ task_id, status?, task_info?, scratchpad?, comments? }`. Returns `{ updated, notFound, scratchpad }`.
+- `scratchpad_append_common_memory`: Append to shared scratchpad memory `{ name, scratchpad_id, append }` (string or array). Returns updated scratchpad.
+
+Why no delete/list? Scratchpads are RAM-like and expected to be cleared externally at session end. Reopen a scratchpad during the same session by `(project name, scratchpad_id)`; the server resolves `project_id` per user.
+
 Transport: Streamable HTTP (stateless JSON-RPC). Clients POST to `/mcp?apiKey=YOUR_USER_API_KEY` or use `Authorization: Bearer <apiKey>`. `GET/DELETE /mcp` return 405.
 
 Structured tasks format:

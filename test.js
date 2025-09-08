@@ -86,7 +86,9 @@ async function run() {
       'list_projects','init_project','delete_project','rename_project',
       'read_agent','write_agent','read_progress',
       'progress_add','progress_set_new_state',
-      'get_agents_md_best_practices_and_examples','generate_task_ids'
+      'get_agents_md_best_practices_and_examples','generate_task_ids',
+      // Scratchpad tools
+      'scratchpad_initialize','review_scratchpad','scratchpad_update_task','scratchpad_append_common_memory'
     ];
     for (const n of expected) assert(toolNames.includes(n), `Missing tool: ${n}`);
 
@@ -272,6 +274,44 @@ async function run() {
     const hasRow = stmt.step();
     stmt.free();
     assert(hasRow, 'Tasks should refer to the same project_id as user_projects.id');
+
+    // --- Scratchpad tests ---
+    const spProject = `${name}_sp`;
+    await client.callTool({ name: 'init_project', arguments: { name: spProject } });
+    const spTasks = [
+      { task_id: 'temp1', task_info: 'one-off step 1', status: 'open', scratchpad: 'notes1', comments: 'c1' },
+      { task_id: 'temp2', task_info: 'one-off step 2', status: 'done', scratchpad: 'notes2' } // 'done' should normalize to 'complete'
+    ];
+    const spInit = await client.callTool({ name: 'scratchpad_initialize', arguments: { name: spProject, tasks: spTasks } });
+    const spInitPayload = JSON.parse(spInit.content?.[0]?.text || '{}');
+    assert(Array.isArray(spInitPayload.tasks) && spInitPayload.tasks.length === 2, 'scratchpad_initialize should return tasks');
+    const spId = spInitPayload.scratchpad_id;
+    assert(typeof spId === 'string' && spId.length > 0, 'scratchpad_initialize should return a generated scratchpad_id');
+    // Review: should expose tasks and empty common_memory
+    const spReview1 = await client.callTool({ name: 'review_scratchpad', arguments: { name: spProject, scratchpad_id: spId } });
+    const spRev1 = JSON.parse(spReview1.content?.[0]?.text || '{}');
+    assert(Array.isArray(spRev1.tasks) && typeof spRev1.common_memory === 'string', 'review_scratchpad should return tasks and common_memory');
+    const spT2 = spRev1.tasks.find(t => t.task_id === 'temp2');
+    assert(spT2 && spT2.status === 'complete', 'status "done" should normalize to "complete"');
+    // Update one task
+    const spUpd = await client.callTool({ name: 'scratchpad_update_task', arguments: { name: spProject, scratchpad_id: spId, updates: [
+      { task_id: 'temp1', status: 'complete', comments: 'finished', scratchpad: 'updated notes' },
+      { task_id: 'nope', comments: 'should not exist' }
+    ] } });
+    const spUpdPayload = JSON.parse(spUpd.content?.[0]?.text || '{}');
+    assert(Array.isArray(spUpdPayload.updated) && spUpdPayload.updated.includes('temp1'), 'scratchpad_update_task should report updated id');
+    assert(Array.isArray(spUpdPayload.notFound) && spUpdPayload.notFound.includes('nope'), 'scratchpad_update_task should report notFound for missing id');
+    // Review changes reflect
+    const spReview2 = await client.callTool({ name: 'review_scratchpad', arguments: { name: spProject, scratchpad_id: spId } });
+    const spRev2 = JSON.parse(spReview2.content?.[0]?.text || '{}');
+    const spT1 = spRev2.tasks.find(t => t.task_id === 'temp1');
+    assert(spT1 && spT1.status === 'complete' && spT1.comments === 'finished' && spT1.scratchpad === 'updated notes', 'Updated fields should be reflected');
+    // Append common memory
+    await client.callTool({ name: 'scratchpad_append_common_memory', arguments: { name: spProject, scratchpad_id: spId, append: 'first memory' } });
+    await client.callTool({ name: 'scratchpad_append_common_memory', arguments: { name: spProject, scratchpad_id: spId, append: ['second memory','third memory'] } });
+    const spReview3 = await client.callTool({ name: 'review_scratchpad', arguments: { name: spProject, scratchpad_id: spId } });
+    const spRev3 = JSON.parse(spReview3.content?.[0]?.text || '{}');
+    assert(spRev3.common_memory.includes('first memory') && spRev3.common_memory.includes('second memory') && spRev3.common_memory.includes('third memory'), 'Appended common_memory should accumulate');
 
     // 10) list_projects contains name
     const list2 = await client.callTool({ name: 'list_projects', arguments: {} });

@@ -58,6 +58,10 @@ import {
   replaceTasks as dbReplaceTasks,
   setTasksState as dbSetTasksState,
   listUserTaskIds as dbListUserTaskIds,
+  initScratchpad as dbInitScratchpad,
+  getScratchpad as dbGetScratchpad,
+  updateScratchpadTasks as dbUpdateScratchpadTasks,
+  appendScratchpadCommonMemory as dbAppendScratchpadCommonMemory,
 } from './src/db.js';
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
@@ -619,7 +623,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'progress_add',
-        description: 'Add one or more structured tasks. Provide an array of task objects. Each requires 8-char task_id (lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note. ' + agentsReminder,
+        description: 'Add one or more structured project-level tasks. Provide an array of task objects. Each requires 8-char task_id (lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -643,7 +647,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'progress_set_new_state',
-        description: 'Update tasks by task_id (8-char) or by matching task_info substring. Provide an array of match terms (ids or substrings). Can set state (pending|in_progress|completed|archived) and/or update fields task_info, parent_id, extra_note. Archiving or completing cascades to all children recursively. Lock rules: when a task or any ancestor is completed/archived, no edits are allowed except unlocking the task itself to pending/in_progress, and only if no ancestor is locked. ' + agentsReminder,
+        description: 'Update project-level tasks by task_id (8-char) or by matching task_info substring. Provide an array of match terms (ids or substrings). Can set state (pending|in_progress|completed|archived) and/or update fields task_info, parent_id, extra_note. Archiving or completing cascades to all children recursively. Lock rules: when a task or any ancestor is completed/archived, no edits are allowed except unlocking the task itself to pending/in_progress, and only if no ancestor is locked. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -730,7 +734,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'read_progress',
-        description: 'Read structured tasks as JSON. Optionally filter by status (pending, in_progress, completed) or synonyms. ' + agentsReminder,
+        description: 'Read structured project-level tasks as JSON. Optionally filter by status (pending, in_progress, completed) or synonyms. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -753,6 +757,84 @@ function buildMcpServer(userId) {
           properties: {
             include: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
           }
+        }
+      },
+      {
+        name: 'scratchpad_initialize',
+        description: 'Start a temporary scratchpad for a one-off task that doesn\'t require documentation in agents.md/progress.md or won\'t need future reference by other agents—like side quests, experiments, or quick calculations outside the main project scope and shouldn\'t belong in the main project tracking. Use this to split the immediate task into manageable (up to 6) small steps (status: open|complete) and keep lightweight notes. The server generates and returns a unique scratchpad_id; use (project name, scratchpad_id) with review/update/append tools. Returns the full scratchpad (tasks + common_memory). If you want to store something non-volatile and is project-level, please edit agents.md or write into the extra_node entry of a task in progress.md.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Project name' },
+            tasks: {
+              type: 'array',
+              maxItems: 6,
+              items: {
+                type: 'object',
+                properties: {
+                  task_id: { type: 'string' },
+                  status: { type: 'string', enum: ['open','complete'] },
+                  task_info: { type: 'string' },
+                  scratchpad: { type: 'string' },
+                  comments: { type: 'string' }
+                },
+                required: ['task_id','task_info']
+              }
+            }
+          },
+          required: ['name','tasks']
+        }
+      },
+      {
+        name: 'review_scratchpad',
+        description: 'Read‑only view of a scratchpad for a one‑off task. Provide (project name, scratchpad_id). Returns the current tasks (max 6) and the append‑only common_memory so you can review steps and notes you take for solving this immediate problem.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            scratchpad_id: { type: 'string' }
+          },
+          required: ['name','scratchpad_id']
+        }
+      },
+      {
+        name: 'scratchpad_update_task',
+        description: 'Update existing scratchpad tasks by task_id to reflect progress on a temporary problem. You can change status (open|complete), task_info, scratchpad (quick notes), and comments. If you need a different set of tasks, create a new scratchpad and use its scratchpad_id. Returns the updated scratchpad.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            scratchpad_id: { type: 'string' },
+            updates: {
+              type: 'array',
+              minItems: 1,
+              items: {
+                type: 'object',
+                properties: {
+                  task_id: { type: 'string' },
+                  status: { type: 'string', enum: ['open','complete'] },
+                  task_info: { type: 'string' },
+                  scratchpad: { type: 'string' },
+                  comments: { type: 'string' }
+                },
+                required: ['task_id']
+              }
+            }
+          },
+          required: ['name','scratchpad_id','updates']
+        }
+      },
+      {
+        name: 'scratchpad_append_common_memory',
+        description: 'Append notes to the scratchpad\'s shared common_memory (append‑only). Use this to log core thinking steps, findings, and conclusions for a one‑off task without editing progress.md. Accepts a string or array of strings and returns the updated scratchpad. If you want to store something non-volatile, please edit agents.md or write into the extra_node entry of a task in progress.md. ',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            scratchpad_id: { type: 'string' },
+            append: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
+          },
+          required: ['name','scratchpad_id','append']
         }
       }
     ]};
@@ -873,6 +955,66 @@ function buildMcpServer(userId) {
           result = { the_art_of_writing_agents_md: theArt, examples: filtered };
         }
         return okText(JSON.stringify(result));
+      }
+      case 'scratchpad_initialize': {
+        const { name: projName, tasks } = args || {};
+        try {
+          if (!validateProjectName(projName)) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
+          }
+          // Server generates scratchpad_id
+          const sp = await dbInitScratchpad(userId, projName, '', Array.isArray(tasks) ? tasks : []);
+          return okText(JSON.stringify(sp));
+        } catch (err) {
+          const msg = String(err?.message || err || 'init failed');
+          const code = /project not found/i.test(msg)
+            ? 'project_not_found'
+            : (/failed_to_generate_scratchpad_id/i.test(msg) ? 'init_failed' : 'init_failed');
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
+      }
+      case 'review_scratchpad': {
+        const { name: projName, scratchpad_id } = args || {};
+        try {
+          if (!validateProjectName(projName)) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
+          }
+          const sp = await dbGetScratchpad(userId, projName, String(scratchpad_id || ''));
+          // Return only tasks and common_memory per spec
+          return okText(JSON.stringify({ tasks: sp.tasks || [], common_memory: sp.common_memory || '' }));
+        } catch (err) {
+          const msg = String(err?.message || err || 'review failed');
+          const code = /project not found/i.test(msg) ? 'project_not_found' : (/scratchpad not found/i.test(msg) ? 'scratchpad_not_found' : 'review_failed');
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
+      }
+      case 'scratchpad_update_task': {
+        const { name: projName, scratchpad_id, updates } = args || {};
+        try {
+          if (!validateProjectName(projName)) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
+          }
+          const res = await dbUpdateScratchpadTasks(userId, projName, String(scratchpad_id || ''), Array.isArray(updates) ? updates : []);
+          return okText(JSON.stringify(res));
+        } catch (err) {
+          const msg = String(err?.message || err || 'update failed');
+          const code = /project not found/i.test(msg) ? 'project_not_found' : (/scratchpad not found/i.test(msg) ? 'scratchpad_not_found' : 'update_failed');
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
+      }
+      case 'scratchpad_append_common_memory': {
+        const { name: projName, scratchpad_id, append } = args || {};
+        try {
+          if (!validateProjectName(projName)) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
+          }
+          const sp = await dbAppendScratchpadCommonMemory(userId, projName, String(scratchpad_id || ''), append);
+          return okText(JSON.stringify(sp));
+        } catch (err) {
+          const msg = String(err?.message || err || 'append failed');
+          const code = /project not found/i.test(msg) ? 'project_not_found' : (/scratchpad not found/i.test(msg) ? 'scratchpad_not_found' : 'append_failed');
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
       }
       case 'progress_add': {
         const { name: projName, item } = args || {};

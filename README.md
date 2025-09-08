@@ -1,5 +1,7 @@
 # mcp-http-agent-md
 
+![](https://badge.mcpx.dev?type=server&features=tools 'MCP server with features')
+
 Minimal MCP (Model Context Protocol) HTTP server to store/update project-level `AGENTS.md` and structured progress tasks via tools exposed over a Streamable HTTP endpoint.
 
 Co-authored by Codex (OpenAI).
@@ -24,15 +26,15 @@ Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
 
 ## Docker
 
-- From Github Package: `docker pull ghcr.io/benhaotang/mcp-http-agent-md:main`
+- From GitHub Package: `docker pull ghcr.io/benhaotang/mcp-http-agent-md:main`
   - Run (persist DB and set admin key):
    ```
-  docker run -it --restart always \
-    -p 3000:3000 \
-    -e MAIN_API_KEY=change-me \
-    -e HOST=0.0.0.0 \
-    -v $(pwd)/data:/app/data \
-    ghcr.io/benhaotang/mcp-http-agent-md:main
+    docker run -it --restart always \
+      -p 3000:3000 \
+      -e MAIN_API_KEY=change-me \
+      -e HOST=0.0.0.0 \
+      -v $(pwd)/data:/app/data \
+      ghcr.io/benhaotang/mcp-http-agent-md:main
   ```
 - Local Build: `docker build -t mcp-http-agent-md .`
 - MCP endpoint: `POST http://localhost:3000/mcp?apiKey=YOUR_USER_API_KEY`
@@ -62,18 +64,6 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/list"}'
 ```
 
-Call a tool (example – init project):
-```
-curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "jsonrpc":"2.0",
-    "id":"2",
-    "method":"tools/call",
-    "params": {"name":"init_project","arguments":{"name":"demo"}}
-  }'
-```
-
 ## Tools
 
 - list_projects: List all project names.
@@ -88,6 +78,16 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
   - Lock rules: When a task (or any ancestor) is `completed` or `archived`, no edits are allowed to that task or its descendants, except unlocking the task itself to `pending` or `in_progress` (and only if none of its ancestors are locked). Unlocking a parent propagates to its descendants.
 - generate_task_ids: Generate N unique 8-character IDs not used by this user `{ count? }` (default 5). Returns `{ ids: ["abcd1234", ...] }`.
 - get_agents_md_best_practices_and_examples: Returns best practices and examples from `example_agent_md.json`. Default returns only `the_art_of_writing_agents_md` (best-practices). Use `include='all'` to include all examples, or set `include` to a string/array to filter by usecase/title.
+
+Scratchpad (ephemeral, per-session) tools:
+- scratchpad_initialize: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. `tasks` is up to 6 items `{ task_id, status: 'open'|'complete', task_info, scratchpad?, comments? }`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
+- review_scratchpad: Review a scratchpad by `{ name, scratchpad_id }`. Returns `{ tasks, common_memory }`.
+- scratchpad_update_task: Update existing scratchpad tasks by `task_id` `{ name, scratchpad_id, updates }`, where `updates` is an array of `{ task_id, status?, task_info?, scratchpad?, comments? }`. Returns `{ updated, notFound, scratchpad }`.
+- scratchpad_append_common_memory: Append to the scratchpad’s shared memory `{ name, scratchpad_id, append }` where `append` is a string or array of strings. Returns the updated scratchpad.
+
+Notes:
+- Scratchpads are transient like RAM; no list/delete tools are provided here. An external cleanup tool is expected to remove them after the session.
+- Agents must address scratchpads by `(project name, scratchpad_id)` to reopen an existing one during the same session.
 
 Project selection: All task tools take a `name` (project name) parameter; the server resolves it to the internal project_id. You never need to provide a `project_id`.
 

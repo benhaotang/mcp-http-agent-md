@@ -67,6 +67,20 @@ async function openDb() {
       FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_user_project ON project_tasks(user_id, project_id);
+    -- Scratchpads: ephemeral per-session task sets (max 6 tasks per scratchpad)
+    CREATE TABLE IF NOT EXISTS scratchpads (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      scratchpad_id TEXT NOT NULL,
+      tasks_json TEXT NOT NULL, -- JSON array of up to 6 task objects
+      common_memory TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT,
+      UNIQUE(user_id, project_id, scratchpad_id),
+      FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_scratchpads_user_project ON scratchpads(user_id, project_id);
   `);
   // Enable foreign key constraints in SQLite (helps catch bad user_id early)
   try { db.exec('PRAGMA foreign_keys = ON;'); } catch {}
@@ -528,4 +542,181 @@ export async function deleteAllTasks(userId, projectName) {
   del.step();
   del.free();
   await persistDb();
+}
+
+// ---------------- Scratchpad APIs ----------------
+
+function normalizeScratchpadStatus(s) {
+  const v = String(s || '').toLowerCase().trim();
+  return v === 'complete' || v === 'completed' || v === 'done' ? 'complete' : 'open';
+}
+
+function coerceString(val) {
+  return typeof val === 'string' ? val : (val == null ? '' : String(val));
+}
+
+function validateScratchpadId(id) {
+  if (typeof id !== 'string') return false;
+  const s = id.trim();
+  // Allow typical safe identifier chars; keep it simple
+  return s.length > 0 && s.length <= 100 && /^[A-Za-z0-9._\-]+$/.test(s);
+}
+
+function normalizeScratchpadTasks(incoming, projectId) {
+  const arr = Array.isArray(incoming) ? incoming.slice(0, 6) : [];
+  const tasks = [];
+  const invalid = [];
+  for (const t of arr) {
+    if (!t || typeof t !== 'object') { invalid.push({ item: t, reason: 'not_an_object' }); continue; }
+    const task_id = coerceString(t.task_id).trim();
+    const task_info = coerceString(t.task_info).trim();
+    const scratchpad = coerceString(t.scratchpad);
+    const comments = coerceString(t.comments);
+    const status = normalizeScratchpadStatus(t.status || 'open');
+    if (!task_id) { invalid.push({ item: t, reason: 'missing_task_id' }); continue; }
+    if (!task_info) { invalid.push({ item: t, reason: 'missing_task_info' }); continue; }
+    tasks.push({ task_id, project_id: projectId, status, task_info, scratchpad, comments });
+  }
+  return { tasks, invalid };
+}
+
+export async function initScratchpad(userId, projectName, scratchpadId, tasksInput) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  // Generate an ID when not provided; otherwise validate the given one
+  let sid = scratchpadId && typeof scratchpadId === 'string' ? scratchpadId.trim() : '';
+  if (!sid) {
+    // Generate a unique short id under this user+project
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    function rand(n) { let s = ''; for (let i = 0; i < n; i++) s += alphabet[Math.floor(Math.random() * alphabet.length)]; return s; }
+    let attempts = 0;
+    while (!sid && attempts < 1000) {
+      attempts++;
+      const candidate = `sp-${rand(8)}`;
+      const chk = db.prepare('SELECT 1 FROM scratchpads WHERE user_id = $u AND project_id = $p AND scratchpad_id = $sid LIMIT 1');
+      chk.bind({ $u: userId, $p: proj.id, $sid: candidate });
+      const exists = chk.step();
+      chk.free();
+      if (!exists) sid = candidate;
+    }
+    if (!sid) throw new Error('failed_to_generate_scratchpad_id');
+  }
+  if (!validateScratchpadId(sid)) throw new Error('invalid scratchpad_id');
+  const now = new Date().toISOString();
+  const { tasks, invalid } = normalizeScratchpadTasks(tasksInput, proj.id);
+  if (tasks.length > 6) tasks.length = 6;
+  // Upsert scratchpad row
+  const sel = db.prepare('SELECT id FROM scratchpads WHERE user_id = $u AND project_id = $p AND scratchpad_id = $sid');
+  sel.bind({ $u: userId, $p: proj.id, $sid: sid });
+  const exists = sel.step();
+  sel.free();
+  if (exists) throw new Error('scratchpad already exists');
+  const ins = db.prepare(`
+    INSERT INTO scratchpads (id, user_id, project_id, scratchpad_id, tasks_json, common_memory, created_at)
+    VALUES ($id, $u, $p, $sid, $t, $cm, $now)
+  `);
+  ins.bind({ $id: newUserId(), $u: userId, $p: proj.id, $sid: sid, $t: JSON.stringify(tasks), $cm: '', $now: now });
+  ins.step();
+  ins.free();
+  await persistDb();
+  return await getScratchpad(userId, projectName, sid, { includeInvalid: invalid });
+}
+
+export async function getScratchpad(userId, projectName, scratchpadId, { includeInvalid } = {}) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const sel = db.prepare('SELECT id, scratchpad_id, tasks_json, common_memory, created_at, updated_at FROM scratchpads WHERE user_id = $u AND project_id = $p AND scratchpad_id = $sid');
+  sel.bind({ $u: userId, $p: proj.id, $sid: scratchpadId });
+  const ok = sel.step();
+  if (!ok) { sel.free(); throw new Error('scratchpad not found'); }
+  const r = sel.getAsObject();
+  sel.free();
+  let tasks = [];
+  try {
+    const parsed = JSON.parse(r.tasks_json || '[]');
+    if (Array.isArray(parsed)) tasks = parsed;
+  } catch {}
+  const out = {
+    scratchpad_id: r.scratchpad_id,
+    project_id: proj.id,
+    tasks,
+    common_memory: r.common_memory || '',
+    created_at: r.created_at,
+    updated_at: r.updated_at || null,
+  };
+  if (includeInvalid && includeInvalid.length) out.invalid = includeInvalid;
+  return out;
+}
+
+export async function updateScratchpadTasks(userId, projectName, scratchpadId, updates) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const sel = db.prepare('SELECT id, tasks_json FROM scratchpads WHERE user_id = $u AND project_id = $p AND scratchpad_id = $sid');
+  sel.bind({ $u: userId, $p: proj.id, $sid: scratchpadId });
+  const ok = sel.step();
+  if (!ok) { sel.free(); throw new Error('scratchpad not found'); }
+  const row = sel.getAsObject();
+  sel.free();
+  let tasks = [];
+  try {
+    const parsed = JSON.parse(row.tasks_json || '[]');
+    if (Array.isArray(parsed)) tasks = parsed;
+  } catch {}
+  const byId = new Map(tasks.map((t, i) => [String(t.task_id), { idx: i, t }]));
+  const list = Array.isArray(updates) ? updates : [];
+  const updated = [];
+  const notFound = [];
+  for (const u of list) {
+    if (!u || typeof u !== 'object') continue;
+    const tid = coerceString(u.task_id).trim();
+    if (!tid) continue;
+    const hit = byId.get(tid);
+    if (!hit) { notFound.push(tid); continue; }
+    const cur = tasks[hit.idx];
+    if (typeof u.status !== 'undefined') cur.status = normalizeScratchpadStatus(u.status);
+    if (typeof u.task_info !== 'undefined') cur.task_info = coerceString(u.task_info);
+    if (typeof u.scratchpad !== 'undefined') cur.scratchpad = coerceString(u.scratchpad);
+    if (typeof u.comments !== 'undefined') cur.comments = coerceString(u.comments);
+    // project_id remains the same; ignore any incoming project_id
+    updated.push(tid);
+  }
+  const now = new Date().toISOString();
+  const upd = db.prepare('UPDATE scratchpads SET tasks_json = $t, updated_at = $now WHERE id = $id');
+  upd.bind({ $t: JSON.stringify(tasks), $now: now, $id: row.id });
+  upd.step();
+  upd.free();
+  await persistDb();
+  return { updated, notFound, scratchpad: await getScratchpad(userId, projectName, scratchpadId) };
+}
+
+export async function appendScratchpadCommonMemory(userId, projectName, scratchpadId, toAppend) {
+  const db = await openDb();
+  const proj = await getProjectByName(userId, projectName);
+  if (!proj) throw new Error('project not found');
+  const sel = db.prepare('SELECT id, common_memory FROM scratchpads WHERE user_id = $u AND project_id = $p AND scratchpad_id = $sid');
+  sel.bind({ $u: userId, $p: proj.id, $sid: scratchpadId });
+  const ok = sel.step();
+  if (!ok) { sel.free(); throw new Error('scratchpad not found'); }
+  const row = sel.getAsObject();
+  sel.free();
+  const appendList = Array.isArray(toAppend) ? toAppend : [toAppend];
+  const normalized = appendList
+    .map(v => coerceString(v).trim())
+    .filter(s => s.length > 0);
+  if (!normalized.length) {
+    return await getScratchpad(userId, projectName, scratchpadId);
+  }
+  const sep = row.common_memory && !row.common_memory.endsWith('\n') ? '\n' : '';
+  const add = normalized.join('\n');
+  const updatedMemory = (row.common_memory || '') + sep + add;
+  const now = new Date().toISOString();
+  const upd = db.prepare('UPDATE scratchpads SET common_memory = $cm, updated_at = $now WHERE id = $id');
+  upd.bind({ $cm: updatedMemory, $now: now, $id: row.id });
+  upd.step();
+  upd.free();
+  await persistDb();
+  return await getScratchpad(userId, projectName, scratchpadId);
 }

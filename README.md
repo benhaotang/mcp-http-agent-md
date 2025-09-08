@@ -37,8 +37,29 @@ Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
       ghcr.io/benhaotang/mcp-http-agent-md:main
   ```
 - Local Build: `docker build -t mcp-http-agent-md .`
-- MCP endpoint: `POST http://localhost:3000/mcp?apiKey=YOUR_USER_API_KEY`
-- Admin API: `http://localhost:3000/auth` (Bearer `MAIN_API_KEY`)
+- Admin API: `http://localhost:3000/auth` (Bearer `MAIN_API_KEY`), generate a `USER_API_KEY` first, see `## Auth`
+- MCP endpoint: `POST http://localhost:3000/mcp?apiKey=USER_API_KEY`
+  - Local 
+    ```json
+    {
+      "mcpServers": {
+        "mcp-agent-md": {
+          "command": "npx",
+          "args": ["-y","mcp-remote","http://localhost:3000/mcp?apiKey=USER_API_KEY`"]
+        }
+      }
+    }
+    ```
+  - Remote
+    ```json
+    {
+      "mcpServers": {
+        "mcp-agent-md": {
+          "url": "https://<your-deployment>/mcp?apiKey=USER_API_KEY",
+        }
+      }
+    }
+    ```
 
 ## Auth
 
@@ -86,7 +107,7 @@ Scratchpad (ephemeral, per-session) tools:
 - scratchpad_append_common_memory: Append to the scratchpad’s shared memory `{ name, scratchpad_id, append }` where `append` is a string or array of strings. Returns the updated scratchpad.
 
 Notes:
-- Scratchpads are transient like RAM; no list/delete tools are provided here. An external cleanup tool is expected to remove them after the session.
+- Scratchpads are transient like RAM; no list/delete tools are provided here. An external cleanup tool is currently "expected" to remove them after the session.
 - Agents must address scratchpads by `(project name, scratchpad_id)` to reopen an existing one during the same session.
 
 Project selection: All task tools take a `name` (project name) parameter; the server resolves it to the internal project_id. You never need to provide a `project_id`.

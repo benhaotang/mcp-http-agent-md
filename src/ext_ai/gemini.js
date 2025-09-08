@@ -3,7 +3,7 @@ import { getScratchpad as dbGetScratchpad, updateScratchpadTasks as dbUpdateScra
 
 function normalizeTools(toolInput) {
   if (!toolInput) return [];
-  const all = new Set(["grounding", "grouding", "crawling", "crawing", "code", "code_execution"]);
+  const all = new Set(["grounding", "search", "crawling", "read", "code", "code_execution"]);
   if (typeof toolInput === 'string') {
     if (toolInput.toLowerCase().trim() === 'all') return ["grounding", "crawling", "code_execution"];
     const val = toolInput.toLowerCase().trim();
@@ -24,8 +24,8 @@ function normalizeTools(toolInput) {
 function buildGeminiTools(toolList) {
   const tools = [];
   const set = new Set(toolList);
-  if (set.has('grounding') || set.has('grouding')) tools.push({ googleSearch: {} });
-  if (set.has('crawling') || set.has('crawing')) tools.push({ urlContext: {} });
+  if (set.has('grounding') || set.has('search')) tools.push({ googleSearch: {} });
+  if (set.has('crawling') || set.has('read')) tools.push({ urlContext: {} });
   if (set.has('code') || set.has('code_execution')) tools.push({ codeExecution: {} });
   return tools;
 }

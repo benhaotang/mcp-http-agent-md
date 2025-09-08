@@ -57,14 +57,16 @@ Expose these tools via MCP CallTool (Streamable HTTP):
 - `list_projects`: List all project names.
 - `init_project`: Create/init project `{ name, agent?, progress? }`. `progress` may include a list of structured task objects (see Tasks below).
 - `delete_project`: Delete a project `{ name }`.
-- `rename_project`: Rename a project `{ oldName, newName }`.
+- `rename_project`: Rename a project `{ oldName, newName, comment? }`. Creates a new versioned commit; accepts optional `comment`.
 - `read_agent`: Read AGENTS.md `{ name, lineNumbers? }`. If `lineNumbers` is `true`, returns lines as `N|...`.
-- `write_agent`: Write AGENTS.md in `mode=full|patch|diff`. For patch/diff, provide a unified diff with `@@` hunks and lines prefixed with space/`+`/`-`. When deleting a markdown bullet that begins with `- `, start the diff line with `-- ` (delete marker + literal dash) to avoid ambiguity.
+- `write_agent`: Write AGENTS.md in `mode=full|patch|diff`. For patch/diff, provide a unified diff with `@@` hunks and lines prefixed with space/`+`/`-`. When deleting a markdown bullet that begins with `- `, start the diff line with `-- ` (delete marker + literal dash) to avoid ambiguity. Creates a new versioned commit; accepts optional `comment`. On success, responses include the updated `hash`.
 - `read_progress`: Read structured tasks `{ name, only? }`. Returns JSON `{ tasks, markdown }`, where `markdown` is a nested outline. `only` filters by `pending | in_progress | completed | archived` (synonyms accepted). Archived tasks are excluded by default; include them by requesting `archived`.
-- `progress_add`: Add structured tasks `{ name, item }` where `item` is an array of task objects. Duplicate `task_id` are skipped and returned via `exists/skipped`.
-- `progress_set_new_state`: Update tasks by `task_id` (8-char) or by matching `task_info` substring `{ name, match, state?, task_info?, parent_id?, extra_note? }`. Completing or archiving cascades to all descendants. Lock rules apply: when a task or any ancestor is `completed` or `archived`, edits are blocked except unlocking the task itself to `pending`/`in_progress` (only if no ancestor is locked). Unlocking a parent propagates.
+- `progress_add`: Add structured tasks `{ name, item, comment? }` where `item` is an array of task objects. Duplicate `task_id` are skipped and returned via `exists/skipped`. Creates a new versioned commit if any new tasks are added; response includes `hash`.
+- `progress_set_new_state`: Update tasks by `task_id` (8-char) or by matching `task_info` substring `{ name, match, state?, task_info?, parent_id?, extra_note?, comment? }`. Completing or archiving cascades to all descendants. Lock rules apply: when a task or any ancestor is `completed` or `archived`, edits are blocked except unlocking the task itself to `pending`/`in_progress` (only if no ancestor is locked). Unlocking a parent propagates. Creates a new versioned commit when changes occur; response includes `hash`.
 - `generate_task_ids`: Generate N unique 8‑char IDs not used by this user `{ count? }`.
 - `get_agents_md_best_practices_and_examples`: Best‑practices + examples from `example_agent_md.json`. Default returns only `the_art_of_writing_agents_md`. Use `include='all'` or a string/array to filter by usecase/title.
+- `list_project_logs`: List commit logs for a project `{ name }`. Returns an ordered list of `{ hash, message, created_at }` for the current history (head-first).
+- `revert_project`: Revert a project to a previous version `{ name, hash }`. Reverting sets HEAD to that hash and trims `hash_history` to that point (no branches). Older commits remain in the DB but are hidden from regular logs.
 
 Scratchpad (ephemeral) tools:
 - `scratchpad_initialize`: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
@@ -83,6 +85,14 @@ Structured tasks format:
 - `parent_id` (optional) should reference the root task’s `task_id` in the same project. This enables arbitrary-depth nesting; a child can itself be a root for deeper descendants.
 
 Project selection: All task tools take a `name` (project name). The server resolves it to the correct internal `project_id`—you never need to provide `project_id` directly.
+
+## Versioning & Backups
+
+- Automatic commits: Any successful edit to `AGENTS.md` or structured tasks (add, edit, status changes) creates a snapshot commit. `rename_project` also commits. The tool response includes the updated `hash` when a commit is created.
+- Commit message: Provide a short `comment` with `write_agent`, `progress_add`, `progress_set_new_state`, or `rename_project` to set the commit message. If omitted, the server uses an ISO timestamp plus the tool name.
+- Initial commit: `init_project` immediately creates an `init` commit and returns its `hash`.
+- Logs: Use `list_project_logs` to retrieve `{ hash, message, created_at }` for the project’s current history.
+- Reverts: `revert_project { name, hash }` restores the full snapshot (AGENTS.md + tasks) and trims the visible `hash_history` after that point. No branches are created. Admins can still access older commits if needed.
 
 ## Auth
 

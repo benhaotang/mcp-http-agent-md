@@ -63,6 +63,7 @@ import {
   updateScratchpadTasks as dbUpdateScratchpadTasks,
   appendScratchpadCommonMemory as dbAppendScratchpadCommonMemory,
 } from './src/db.js';
+import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, listProjectLogs as vcListLogs, revertProject as vcRevertProject } from './src/version.js';
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -100,6 +101,10 @@ function userOps(userId) {
           res.exists = [];
         }
       }
+      try {
+        const hash = await vcOnInitProject(userId, name);
+        res.hash = hash;
+      } catch {}
       return res;
     },
     async removeProject(name) {
@@ -623,7 +628,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'progress_add',
-        description: 'Add one or more structured project-level tasks. Provide an array of task objects. Each requires 8-char task_id (lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note. ' + agentsReminder,
+        description: 'Add one or more structured project-level tasks. Provide an array of task objects. Each requires 8-char task_id (lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note. Optionally include a commit message via comment.' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -640,14 +645,15 @@ function buildMcpServer(userId) {
                 },
                 required: ['task_id','task_info']
               }
-            }
+            },
+            comment: { type: 'string' }
           },
           required: ['name', 'item']
         }
       },
       {
         name: 'progress_set_new_state',
-        description: 'Update project-level tasks by task_id (8-char) or by matching task_info substring. Provide an array of match terms (ids or substrings). Can set state (pending|in_progress|completed|archived) and/or update fields task_info, parent_id, extra_note. Archiving or completing cascades to all children recursively. Lock rules: when a task or any ancestor is completed/archived, no edits are allowed except unlocking the task itself to pending/in_progress, and only if no ancestor is locked. ' + agentsReminder,
+        description: 'Update project-level tasks by task_id (8-char) or by matching task_info substring. Provide an array of match terms (ids or substrings). Can set state (pending|in_progress|completed|archived) and/or update fields task_info, parent_id, extra_note. Archiving or completing cascades to all children recursively. Lock rules: when a task or any ancestor is completed/archived, no edits are allowed except unlocking the task itself to pending/in_progress, and only if no ancestor is locked. Optionally include a commit message via comment.' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -656,7 +662,8 @@ function buildMcpServer(userId) {
             state: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'archived'] },
             task_info: { type: 'string' },
             parent_id: { type: 'string', minLength: 8, maxLength: 8 },
-            extra_note: { type: 'string' }
+            extra_note: { type: 'string' },
+            comment: { type: 'string' }
           },
           required: ['name', 'match']
         }
@@ -696,12 +703,13 @@ function buildMcpServer(userId) {
       },
       {
         name: 'rename_project',
-        description: 'Rename a project. ' + agentsReminder,
+        description: 'Rename a project. Optionally include a commit message via comment. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
             oldName: { type: 'string' },
-            newName: { type: 'string' }
+            newName: { type: 'string' },
+            comment: { type: 'string' }
           },
           required: ['oldName', 'newName']
         }
@@ -720,17 +728,28 @@ function buildMcpServer(userId) {
       },
       {
         name: 'write_agent',
-        description: 'Write AGENTS.md (mode=full|patch|diff). For patch/diff, provide a unified diff string: use hunk headers like @@ -l,c +l,c @@ and lines prefixed with space (context), + (add), - (delete). If deleting a markdown list item that starts with "- ", the diff line must start with "-- " (delete marker + literal dash). Lines must preserve leading spaces in context. ' + agentsReminder,
+        description: 'Write AGENTS.md (mode=full|patch|diff). For patch/diff, provide a unified diff string: use hunk headers like @@ -l,c +l,c @@ and lines prefixed with space (context), + (add), - (delete). If deleting a markdown list item that starts with "- ", the diff line must start with "-- " (delete marker + literal dash). Lines must preserve leading spaces in context. Optionally include a commit message via comment.' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
             name: { type: 'string' },
             content: { type: 'string', description: 'Full file contents when mode=full (default)' },
             patch: { type: 'string', description: 'Unified diff (git-style) when mode=patch/diff' },
-            mode: { type: 'string', enum: ['full', 'patch', 'diff'], description: 'Edit mode; defaults to full' }
+            mode: { type: 'string', enum: ['full', 'patch', 'diff'], description: 'Edit mode; defaults to full' },
+            comment: { type: 'string' }
           },
           required: ['name']
         }
+      },
+      {
+        name: 'list_project_logs',
+        description: 'List commit logs (hash, message, created_at) for a project. Requires project name.',
+        inputSchema: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] }
+      },
+      {
+        name: 'revert_project',
+        description: 'Revert a project to a previous version by hash. Removes newer hashes from history (no branches). Requires project name and hash.',
+        inputSchema: { type: 'object', properties: { name: { type: 'string' }, hash: { type: 'string' } }, required: ['name', 'hash'] }
       },
       {
         name: 'read_progress',
@@ -874,9 +893,14 @@ function buildMcpServer(userId) {
         return okText('deleted');
       }
       case 'rename_project': {
-        const { oldName, newName } = args || {};
+        const { oldName, newName, comment } = args || {};
         const result = await ops.renameProject(oldName, newName);
-        return okText(JSON.stringify(result));
+        try {
+          const hash = await vcCommitProject(userId, newName, { action: 'rename_project', comment });
+          return okText(JSON.stringify({ ...result, hash }));
+        } catch {
+          return okText(JSON.stringify(result));
+        }
       }
       case 'read_agent': {
         const { name: projName, lineNumbers } = args || {};
@@ -890,20 +914,24 @@ function buildMcpServer(userId) {
       }
       case 'write_agent': {
         const { name: projName } = args || {};
-        let { content, patch, mode } = args || {};
+        let { content, patch, mode, comment } = args || {};
         const editMode = String(mode || (patch ? 'patch' : 'full')).toLowerCase();
         try {
           if (editMode === 'full') {
             if (typeof content !== 'string') throw new Error('content (string) required for full mode');
             await ops.writeDoc(projName, 'agent', content);
-            return okText(JSON.stringify({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8') }));
+            let hash = null;
+            try { hash = await vcCommitProject(userId, projName, { action: 'write_agent', comment }); } catch {}
+            return okText(JSON.stringify({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8'), hash }));
           }
           if (editMode === 'patch' || editMode === 'diff') {
             if (typeof patch !== 'string') throw new Error('patch (unified diff string) required for patch/diff mode');
             const current = await ops.readDoc(projName, 'agent');
             const updated = applyUnifiedDiff(current, patch);
             await ops.writeDoc(projName, 'agent', updated);
-            return okText(JSON.stringify({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8') }));
+            let hash = null;
+            try { hash = await vcCommitProject(userId, projName, { action: 'write_agent', comment }); } catch {}
+            return okText(JSON.stringify({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8'), hash }));
           }
           throw new Error(`Unknown mode: ${mode}`);
         } catch (err) {
@@ -1017,7 +1045,7 @@ function buildMcpServer(userId) {
         }
       }
       case 'progress_add': {
-        const { name: projName, item } = args || {};
+        const { name: projName, item, comment } = args || {};
         try {
           // Enforce arrays: either an array directly, or a JSON string that parses to an array
           let incoming;
@@ -1042,7 +1070,11 @@ function buildMcpServer(userId) {
             return okText(JSON.stringify({ added: [], exists: [], invalid, notice: 'No valid tasks to add' }));
           }
           const res = await dbAddTasks(userId, projName, tasks);
-          return okText(JSON.stringify({ added: res.added, skipped: res.exists, invalid }));
+          let hash = null;
+          if ((res.added?.length || 0) > 0) {
+            try { hash = await vcCommitProject(userId, projName, { action: 'progress_add', comment }); } catch {}
+          }
+          return okText(JSON.stringify({ added: res.added, skipped: res.exists, invalid, hash }));
         } catch (err) {
           const msg = String(err?.message || err || 'add failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'add_failed';
@@ -1050,7 +1082,7 @@ function buildMcpServer(userId) {
         }
       }
       case 'progress_set_new_state': {
-        const { name: projName, match, state, task_info, parent_id, extra_note } = args || {};
+        const { name: projName, match, state, task_info, parent_id, extra_note, comment } = args || {};
         try {
           const normalizedState = typeof state === 'undefined' ? undefined : normalizeStatus(state);
           // Enforce arrays: either an array directly, or a JSON string that parses to an array of strings
@@ -1080,7 +1112,9 @@ function buildMcpServer(userId) {
             }
             return okText(JSON.stringify({ changed: [], state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, notice: 'No items changed. Items may be locked or list changed. Pull updated list?', suggest: 'read_progress' }));
           }
-          return okText(JSON.stringify({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden }));
+          let hash = null;
+          try { hash = await vcCommitProject(userId, projName, { action: 'progress_set_new_state', comment }); } catch {}
+          return okText(JSON.stringify({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, hash }));
         } catch (err) {
           const msg = String(err?.message || err || 'set_state failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'update_failed';
@@ -1109,6 +1143,30 @@ function buildMcpServer(userId) {
           return okText(JSON.stringify({ error: 'generation_exhausted', message: 'Unable to generate enough unique IDs', generated: Array.from(ids.values()) }));
         }
         return okText(JSON.stringify({ ids: Array.from(ids.values()) }));
+      }
+      case 'list_project_logs': {
+        const { name: projName } = args || {};
+        try {
+          const logs = await vcListLogs(userId, projName);
+          return okText(JSON.stringify({ logs }));
+        } catch (err) {
+          const msg = String(err?.message || err || 'list logs failed');
+          const code = /project not found/i.test(msg) ? 'project_not_found' : 'list_failed';
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
+      }
+      case 'revert_project': {
+        const { name: projName, hash } = args || {};
+        try {
+          const res = await vcRevertProject(userId, projName, String(hash || ''));
+          return okText(JSON.stringify({ name: projName, hash: res.hash }));
+        } catch (err) {
+          const msg = String(err?.message || err || 'revert failed');
+          let code = 'revert_failed';
+          if (/project not found/i.test(msg)) code = 'project_not_found';
+          else if (/hash_not_found/i.test(msg)) code = 'hash_not_found';
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
       }
       default:
         throw new Error(`Unknown tool: ${name}`);

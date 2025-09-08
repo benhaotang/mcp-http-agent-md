@@ -325,7 +325,7 @@ async function run() {
 
     // 12) Verify project_id consistency: project_tasks rows use the same id as user_projects.id
     // This is guaranteed by FK and our insert code; assert it explicitly.
-    const { _internal: dbInternal, getProjectByName } = await import('./src/db.js');
+    const { _internal: dbInternal, getProjectByName } = await import('../src/db.js');
     const db = await dbInternal.openDb();
     const projRow = await getProjectByName(created.id, name3);
     const stmt = db.prepare('SELECT DISTINCT project_id FROM project_tasks WHERE user_id = $u AND project_id = $p');

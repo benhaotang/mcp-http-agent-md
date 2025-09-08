@@ -38,8 +38,10 @@ import {
   getScratchpad as dbGetScratchpad,
   updateScratchpadTasks as dbUpdateScratchpadTasks,
   appendScratchpadCommonMemory as dbAppendScratchpadCommonMemory,
+  getSubagentRun as dbGetSubagentRun,
 } from './src/db.js';
 import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, listProjectLogs as vcListLogs, revertProject as vcRevertProject } from './src/version.js';
+import { runScratchpadSubagent } from './src/ext_ai/gemini.js';
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -494,11 +496,27 @@ function buildMcpServer(userId) {
       "Default returns only 'the_art_of_writing_agents_md' (best-practices)."
     ].join(' ') + ' ' + agentsReminder;
 
-    return { tools: [
+    const result = { tools: [
       {
         name: 'list_projects',
         description: 'List all project names',
         inputSchema: { type: 'object', properties: {} }
+      },
+      {
+        name: 'scratchpad_subagent',
+        description: 'Start a subagent (Gemini) to work on a scratchpad task. Required: name (project), scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"). Available tools the subagent can use: grounding (search), crawling (web fetch), code_execution (run code). Provide tool as "all" or a subset of [grounding, crawling, code_execution]. The server auto-appends the scratchpad\'s common_memory to the prompt when present. The subagent appends its answer to the task\'s scratchpad and logs any sources/code it used into comments.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            scratchpad_id: { type: 'string' },
+            task_id: { type: 'string' },
+            prompt: { type: 'string' },
+            sys_prompt: { type: 'string' , description: 'Default: You are a general problem-solving agent with access to tool_list. Keep answers concise and accurate.'},
+            tool: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
+          },
+          required: ['name','scratchpad_id','task_id','prompt']
+        }
       },
       {
         name: 'generate_task_ids',
@@ -739,8 +757,27 @@ function buildMcpServer(userId) {
           },
           required: ['name','scratchpad_id','append']
         }
+      },
+      {
+        name: 'scratchpad_subagent_status',
+        description: 'Check subagent run status by run_id for a project. If status is success or failure, return immediately. If pending/in_progress, poll up to 5 times at 5s intervals until it changes; otherwise return the latest status.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            run_id: { type: 'string' }
+          },
+          required: ['name','run_id']
+        }
       }
     ]};
+
+    // Hide external-AI tools when USE_EXTERNAL_AI=false
+    const externalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false' ? true : false;
+    if (!externalAi) {
+      result.tools = result.tools.filter(t => t.name !== 'scratchpad_subagent' && t.name !== 'scratchpad_subagent_status');
+    }
+    return result;
   });
 
   // Tool invocation handler
@@ -926,6 +963,51 @@ function buildMcpServer(userId) {
           const msg = String(err?.message || err || 'append failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : (/scratchpad not found/i.test(msg) ? 'scratchpad_not_found' : 'append_failed');
           return okText(JSON.stringify({ error: code, message: msg }));
+        }
+      }
+      case 'scratchpad_subagent': {
+        const { name: projName, scratchpad_id, task_id, prompt, sys_prompt, tool } = args || {};
+        try {
+          const externalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false';
+          if (!externalAi) {
+            return okText(JSON.stringify({ error: 'external_ai_disabled', message: 'scratchpad_subagent is disabled (USE_EXTERNAL_AI=false)' }));
+          }
+          if (!validateProjectName(projName)) {
+            return okText(JSON.stringify({ run_id: `run-${Math.random().toString(36).slice(2, 10)}`, status: 'failure', error: 'invalid_project_name' }));
+          }
+          const result = await runScratchpadSubagent(userId, { name: projName, scratchpad_id, task_id, prompt, sys_prompt, tool });
+          return okText(JSON.stringify(result));
+        } catch (err) {
+          const msg = String(err?.message || err || 'subagent failed');
+          return okText(JSON.stringify({ run_id: `run-${Math.random().toString(36).slice(2, 10)}`, status: 'failure', error: msg }));
+        }
+      }
+      case 'scratchpad_subagent_status': {
+        const { name: projName, run_id } = args || {};
+        try {
+          const externalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false';
+          if (!externalAi) {
+            return okText(JSON.stringify({ error: 'external_ai_disabled', message: 'scratchpad_subagent_status is disabled (USE_EXTERNAL_AI=false)' }));
+          }
+          if (!validateProjectName(projName)) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
+          }
+          const pollable = new Set(['pending','in_progress']);
+          const maxChecks = 5;
+          const waitMs = 5000;
+          let info = await dbGetSubagentRun(userId, projName, String(run_id || ''));
+          if (!info) return okText(JSON.stringify({ error: 'run_not_found', message: 'Unknown run_id for this project', run_id }));
+          if (!pollable.has(info.status)) return okText(JSON.stringify(info));
+          for (let i = 0; i < maxChecks; i++) {
+            await new Promise(r => setTimeout(r, waitMs));
+            info = await dbGetSubagentRun(userId, projName, String(run_id || ''));
+            if (!info) return okText(JSON.stringify({ error: 'run_not_found', message: 'Unknown run_id for this project', run_id }));
+            if (!pollable.has(info.status)) break;
+          }
+          return okText(JSON.stringify(info));
+        } catch (err) {
+          const msg = String(err?.message || err || 'status failed');
+          return okText(JSON.stringify({ error: 'status_failed', message: msg }));
         }
       }
       case 'progress_add': {

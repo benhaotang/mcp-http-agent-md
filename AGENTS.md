@@ -31,6 +31,12 @@ Notes:
 - `PORT`: port to bind (default `3000`)
 - `MAIN_API_KEY`: required for admin endpoints under `/auth`
 - `.env` support: environment variables are loaded from `.env` at process start (lightweight loader in `index.js`).
+ - External AI (subagent) env:
+   - `USE_EXTERNAL_AI`: enable/disable external subagent tools (set to `false` to hide/disable)
+   - `AI_API_TYPE`: `google`
+   - `AI_API_KEY`: provider API key (required when enabled)
+   - `AI_MODEL`: model id (default `gemini-2.5-pro`)
+   - `AI_TIMEOUT`: hard timeout in seconds for subagent runs (default `120`)
 
 ## Architecture
 
@@ -38,6 +44,7 @@ Minimal Node.js ESM app with Express + MCP Streamable HTTP:
 - `index.js` — Express app, MCP server (Streamable HTTP) at `POST /mcp`; defines and wires all MCP tools; mounts admin router under `/auth`.
 - `src/db.js` — SQLite (sql.js) persistence, schema and CRUD for users, projects, and structured tasks (including cascade + lock rules).
 - `src/auth.js` — Admin auth middleware (Bearer `MAIN_API_KEY`), user API key auth for MCP, and `/auth` routes.
+- `src/env.js` - Read and load .env file.
 - `example_agent_md.json` — Best practices and example snippets for AGENTS.md returned by the examples tool.
 - `data/` — Persisted database directory (`app.sqlite`).
 - `test.js` — Smoke test using the official MCP client transport to exercise tools end-to-end.
@@ -73,6 +80,18 @@ Scratchpad (ephemeral) tools:
 - `review_scratchpad`: Review a scratchpad `{ name, scratchpad_id }`. Returns `{ tasks, common_memory }`.
 - `scratchpad_update_task`: Update existing scratchpad tasks by `task_id` `{ name, scratchpad_id, updates }`, where `updates` is an array of `{ task_id, status?, task_info?, scratchpad?, comments? }`. Returns `{ updated, notFound, scratchpad }`.
 - `scratchpad_append_common_memory`: Append to shared scratchpad memory `{ name, scratchpad_id, append }` (string or array). Returns updated scratchpad.
+
+External AI subagent (conditionally available):
+- `scratchpad_subagent` (requires external AI enabled): Start a subagent to work on a scratchpad task `{ name, scratchpad_id, task_id, prompt, sys_prompt?, tool? }`.
+  - `tool`: choose `'all'` or a subset of `[grounding, crawling, code_execution]`.
+  - Automatically appends `common_memory` (if present) to the prompt.
+  - Appends the agent’s result to the task’s `scratchpad`; sources and executed code (when provided by the model) are appended to `comments`.
+  - Returns `{ run_id, status }`. May return early with `status: in_progress` while work continues.
+- `scratchpad_subagent_status`: Check run status `{ name, run_id }`. Returns current `{ run_id, status }`. If `pending/in_progress`, it polls up to ~25s and returns the final or latest status.
+
+Notes:
+- These two tools are hidden and disabled when `USE_EXTERNAL_AI=false`.
+- Default subagent identity: general problem‑solving agent. You may override via `sys_prompt`.
 
 Why no delete/list? Scratchpads are RAM-like and expected to be cleared externally at session end. Reopen a scratchpad during the same session by `(project name, scratchpad_id)`; the server resolves `project_id` per user.
 

@@ -17,7 +17,8 @@
   "scripts": {
     "dev": "nodemon --watch index.js --ext js,mjs,cjs index.js",
     "start": "node index.js",
-    "test": "node test.js"
+    "test": "node test/test.js",
+    "test:subagent": "node test/test-subagent.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

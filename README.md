@@ -2,7 +2,7 @@
 
 ![](https://badge.mcpx.dev?type=server&features=tools 'MCP server with features')
 
-Minimal MCP (Model Context Protocol) HTTP server to store/update project-level `AGENTS.md` and structured progress tasks via tools exposed over a Streamable HTTP endpoint.
+Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint.
 
 Co-authored by Codex (OpenAI).
 
@@ -34,7 +34,7 @@ Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
       -e MAIN_API_KEY=change-me \
       -e HOST=0.0.0.0 \
       -v $(pwd)/data:/app/data \
-      ghcr.io/benhaotang/mcp-http-agent-md:main
+      ghcr.io/benhaotang/mcp-http-agent-md:v0.0.3
   ```
 - Local Build: `docker build -t mcp-http-agent-md .`
 - Admin API: `http://localhost:3000/auth` (Bearer `MAIN_API_KEY`), generate a `USER_API_KEY` first, see `## Auth`

@@ -24,16 +24,17 @@ Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
 
 ## Docker
 
-- Build: `docker build -t mcp-http-agent-md .`
-- Run (persist DB and set admin key):
-```
-docker run -it --rm \
-  -p 3000:3000 \
-  -e MAIN_API_KEY=change-me \
-  -e HOST=0.0.0.0 \
-  -v $(pwd)/data:/app/data \
-  mcp-http-agent-md
-```
+- From Github Package: `docker pull ghcr.io/benhaotang/mcp-http-agent-md:main`
+  - Run (persist DB and set admin key):
+   ```
+  docker run -it --restart always \
+    -p 3000:3000 \
+    -e MAIN_API_KEY=change-me \
+    -e HOST=0.0.0.0 \
+    -v $(pwd)/data:/app/data \
+    ghcr.io/benhaotang/mcp-http-agent-md:main
+  ```
+- Local Build: `docker build -t mcp-http-agent-md .`
 - MCP endpoint: `POST http://localhost:3000/mcp?apiKey=YOUR_USER_API_KEY`
 - Admin API: `http://localhost:3000/auth` (Bearer `MAIN_API_KEY`)
 

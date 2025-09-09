@@ -33,9 +33,10 @@ Notes:
 - `.env` support: environment variables are loaded from `.env` at process start (lightweight loader in `index.js`).
  - External AI (subagent) env:
    - `USE_EXTERNAL_AI`: enable/disable external subagent tools (set to `false` to hide/disable)
-   - `AI_API_TYPE`: `google`
+   - `AI_API_TYPE`: one of `google | openai | groq | openai_com` (synonyms accepted: `gemini`→`google`, `oa`/`oai`→`openai`, `openai-compatible`/`compat`→`openai_com`)
    - `AI_API_KEY`: provider API key (required when enabled)
-   - `AI_MODEL`: model id (default `gemini-2.5-pro`)
+   - `AI_MODEL`: model id; defaults per provider when omitted: `google: gemini-2.5-pro`, `openai: gpt-5-mini`, `groq: openai/gpt-oss-120b`, `openai_com: gpt-4o-mini`
+   - `AI_BASE_ENDPOINT`: optional base URL for OpenAI‑compatible or self‑hosted endpoints
    - `AI_TIMEOUT`: hard timeout in seconds for subagent runs (default `120`)
 
 ## Architecture
@@ -45,6 +46,9 @@ Minimal Node.js ESM app with Express + MCP Streamable HTTP:
 - `src/db.js` — SQLite (sql.js) persistence, schema and CRUD for users, projects, and structured tasks (including cascade + lock rules).
 - `src/auth.js` — Admin auth middleware (Bearer `MAIN_API_KEY`), user API key auth for MCP, and `/auth` routes.
 - `src/env.js` - Read and load .env file.
+- `src/ext_ai/` — External AI subagent controller and providers:
+  - `ext_ai.js`: central controller (selects provider based on `AI_API_TYPE`, normalizes tools, manages run status, and appends results to scratchpads).
+  - `gemini.js`, `openai.js`, `groq.js`, `openai_com.js`: provider modules, each exporting a single `infer(...)` for plug‑and‑play use.
 - `example_agent_md.json` — Best practices and example snippets for AGENTS.md returned by the examples tool.
 - `data/` — Persisted database directory (`app.sqlite`).
 - `test.js` — Smoke test using the official MCP client transport to exercise tools end-to-end.

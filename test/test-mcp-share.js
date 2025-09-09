@@ -85,12 +85,13 @@ async function run() {
     const initRes = await client1.callTool({ name: 'init_project', arguments: { name: projName } });
     const initJson = JSON.parse(initRes.content?.[0]?.text || '{}');
     assert(initJson.hash, 'init_project should return hash');
+    assert(initJson.id, 'init_project should return project id');
+    const projectId = initJson.id;
 
-    // find project id via admin list
+    // verify project id via admin list
     const list = await adminList(MAIN);
-    const row = list.find(p => p.name === projName);
-    assert(row && row.owner_id === u1.id, 'Project should be owned by u1');
-    const projectId = row.id;
+    const row = list.find(p => p.id === projectId);
+    assert(row && row.owner_id === u1.id && row.name === projName, 'Project should be owned by u1 with correct name');
 
     // user2 list should not show it
     const resNoAccessList = await fetch(`${BASE}/project/list?apiKey=${encodeURIComponent(u2.apiKey)}`);
@@ -101,7 +102,7 @@ async function run() {
     const client2 = new Client({ name: 'client2', version: '0.0.0' });
     const t2 = new StreamableHTTPClientTransport(new URL(`${MCP}?apiKey=${encodeURIComponent(u2.apiKey)}`));
     await client2.connect(t2);
-    const readBefore = await client2.callTool({ name: 'read_agent', arguments: { name: projName } });
+    const readBefore = await client2.callTool({ name: 'read_agent', arguments: { project_id: projectId } });
     const readBeforeJson = JSON.parse(readBefore.content?.[0]?.text || '{}');
     assert(readBeforeJson.error === 'project_not_found', 'read_agent should be project_not_found before share');
 
@@ -110,15 +111,17 @@ async function run() {
     const sro = await shareProject(ownerHeader, projectId, u2.id, 'ro');
     assert(sro.status === 200, 'Share RO should succeed');
 
-    // list_projects shows Read-Only suffix
+    // list_projects shows Read-Only suffix and project data
     const list2 = await client2.listTools({}); // ensure connected
     const listProjRes = await client2.callTool({ name: 'list_projects', arguments: {} });
     const listProjJson = JSON.parse(listProjRes.content?.[0]?.text || '{}');
-    const names = listProjJson.projects || [];
-    assert(names.includes(`${projName} (Read-Only)`), 'Read-Only suffix appears');
+    const projects = listProjJson.projects || [];
+    assert(Array.isArray(projects), 'list_projects should return array of project objects');
+    const sharedProj = projects.find(p => p.id === projectId);
+    assert(sharedProj && sharedProj.read_only === true, 'Shared project should have read_only flag');
 
     // write_agent should return read_only_project
-    const writeRo = await client2.callTool({ name: 'write_agent', arguments: { name: projName, content: '# agent\nfrom u2' } });
+    const writeRo = await client2.callTool({ name: 'write_agent', arguments: { project_id: projectId, content: '# agent\nfrom u2' } });
     const writeRoJson = JSON.parse(writeRo.content?.[0]?.text || '{}');
     assert(writeRoJson.error === 'read_only_project', 'RO participant cannot write');
 
@@ -127,8 +130,8 @@ async function run() {
     assert(srw.status === 200 && srw.json.permission === 'rw', 'Upgrade to RW');
 
     // RW write should succeed and commit with Modified by
-    await client2.callTool({ name: 'write_agent', arguments: { name: projName, content: '# agent\nRW edit' } });
-    const logsRes = await client2.callTool({ name: 'list_project_logs', arguments: { name: projName } });
+    await client2.callTool({ name: 'write_agent', arguments: { project_id: projectId, content: '# agent\nRW edit' } });
+    const logsRes = await client2.callTool({ name: 'list_project_logs', arguments: { project_id: projectId } });
     const logsJson = JSON.parse(logsRes.content?.[0]?.text || '{}');
     const lastMsg = (logsJson.logs || []).slice(-1)[0]?.message || '';
     assert(/Modified by/i.test(lastMsg), 'Commit message should include Modified by for RW edits');

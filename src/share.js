@@ -50,6 +50,7 @@ export function buildProjectsRouter() {
       const mapped = rows.map(r => ({
         id: r.id,
         name: r.name + (r.permission === 'ro' && r.owner_id !== user.id ? ' (Read-Only)' : ''),
+        read_only: r.permission === 'ro' && r.owner_id !== user.id,
       }));
       return res.json({ scope: 'user', projects: mapped });
     } catch (e) {

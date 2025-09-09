@@ -850,7 +850,8 @@ function buildMcpServer(userId, userName) {
           }
           const result = await ops.initProject(projName, { agent, progress });
           // Tell agents about task_id constraint
-          return okText(JSON.stringify({ status: 'ok', note: 'Tasks use exactly 8 lowercase a-z0-9 IDs (e.g., abcd1234).', ...result }));
+          const finalResult = { status: 'ok', note: 'Tasks use exactly 8 lowercase a-z0-9 IDs (e.g., abcd1234).', ...result };
+          return okText(JSON.stringify(finalResult));
         } catch (err) {
           const msg = String(err?.message || err || 'init failed');
           const code = /user not authenticated/i.test(msg) ? 'unauthorized' : (/project name required/i.test(msg) ? 'invalid_request' : 'init_failed');

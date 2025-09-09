@@ -18,14 +18,15 @@ async function main() {
   console.log('[mcp-test] Using model:', model);
 
   try {
+    // Test 1: only pass 'filesystem' tool to the subagent
     const res = await infer({
       apiKey,
       model,
       baseUrl,
       systemPrompt:
-        'You can call tools. Before answering, you MUST call one available tool with minimal valid inputs. If a file or listing tool exists, use it to fetch a tiny snippet, this is just for testing. Even if the tool errors, proceed to respond. After the tool call, reply with: TOOL_CALLED <short summary>.',
-      userPrompt: 'Perform one tool call, then respond as instructed.',
-      tools: [],
+        'You can call MCP tools. Call exactly one available tool with minimal valid inputs. Do not call any other tools. After the tool call, reply with: TOOL_CALLED <short summary>.',
+      userPrompt: 'Perform a single tool call, then respond as instructed.',
+      tools: ['filesystem'],
       timeoutSec: Number(process.env.MCP_TEST_TIMEOUT || 20),
     });
 
@@ -36,11 +37,28 @@ async function main() {
       throw new Error('Expected marker TOOL_CALLED in response.');
     }
     if (history.length >= 1) {
-      console.log('[mcp-test] Tool call(s) executed:', history.map(h => h.toolName || h.type).join(', '));
+      const servers = Array.from(new Set(history.map(h => h.server).filter(Boolean)));
+      if (servers.some(s => s !== 'filesystem')) {
+        throw new Error(`Unexpected server(s) used: ${servers.join(', ')} (expected only 'filesystem')`);
+      }
+      console.log('[mcp-test] Only filesystem server tools were used as expected.');
     } else {
       console.warn('[mcp-test] No tool calls recorded (model may have chosen to answer without tools).');
     }
-    console.log('[mcp-test] Tool call test OK');
+
+    // Test 2: request a missing tool and expect an early error
+    let missingErr = null;
+    try {
+      await infer({ apiKey, model, baseUrl, systemPrompt: '', userPrompt: 'noop', tools: ['nonexistent_mcp_tool'], timeoutSec: 10 });
+    } catch (e) {
+      missingErr = String(e?.message || e);
+    }
+    if (!missingErr || !missingErr.includes('mcp_requested_servers_not_found')) {
+      throw new Error('Expected mcp_requested_servers_not_found error when requesting a missing server.');
+    }
+    console.log('[mcp-test] Missing tool error surfaced as expected.');
+
+    console.log('[mcp-test] Tool selection tests OK');
   } catch (err) {
     console.error('[mcp-test] Failed:', err?.message || err);
     process.exitCode = 1;

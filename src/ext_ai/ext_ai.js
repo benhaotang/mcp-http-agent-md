@@ -206,9 +206,33 @@ export async function runScratchpadSubagent(
 
   // Compute provider-supported tools and filter the request
   const caps = providerCapabilities(providerKey);
-  const chosenTools = requestedTools.length ? requestedTools.filter(t => caps.includes(t)) : caps;
-  const toolNamesForPrompt = chosenTools.join(', ');
-  const defaultSys = `You are a general problem-solving agent with access to ${toolNamesForPrompt || 'no external tools'}. Keep answers concise and accurate.`;
+  let chosenTools = requestedTools.length ? requestedTools.filter(t => caps.includes(t)) : caps;
+
+  // For MCP provider, interpret the raw 'tool' argument as specific MCP tool names (or 'all')
+  let mcpToolSelection = null; // null means 'all'
+  if (providerKey === 'mcp') {
+    const raw = tool;
+    if (raw == null) {
+      mcpToolSelection = 'all';
+    } else if (typeof raw === 'string') {
+      const val = raw.trim();
+      mcpToolSelection = /^all$/i.test(val)
+        ? 'all'
+        : val.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    } else if (Array.isArray(raw)) {
+      const arr = raw.map(v => String(v || '').trim()).filter(Boolean);
+      mcpToolSelection = arr.length === 1 && /^all$/i.test(arr[0]) ? 'all' : arr;
+    } else {
+      mcpToolSelection = 'all';
+    }
+  }
+
+  const toolNamesForPrompt = providerKey === 'mcp'
+    ? (mcpToolSelection === 'all' || (Array.isArray(mcpToolSelection) && mcpToolSelection.length === 0)
+        ? 'MCP tools'
+        : `MCP tools (${(mcpToolSelection || []).join(', ')})`)
+    : (chosenTools.join(', ') || 'no external tools');
+  const defaultSys = `You are a general problem-solving agent with access to ${toolNamesForPrompt}. Keep answers concise and accurate.`;
   const systemPrompt = String(sys_prompt || defaultSys);
 
   const runWork = async () => {
@@ -220,7 +244,7 @@ export async function runScratchpadSubagent(
         baseUrl,
         systemPrompt,
         userPrompt: finalPrompt,
-        tools: chosenTools,
+        tools: providerKey === 'mcp' ? (mcpToolSelection || 'all') : chosenTools,
         timeoutSec: aiTimeoutSec,
       });
 

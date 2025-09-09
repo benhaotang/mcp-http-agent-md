@@ -520,14 +520,14 @@ function buildMcpServer(userId) {
         for (const [name, cfg] of Object.entries(servers)) {
           const desc = String(cfg?.short_descriptions || '').trim();
           if (desc) {
-            parts.push(`${name}(${desc})`);
+            parts.push(`${name} (${desc})`);
           } else {
             // Warn in console so users can improve discoverability next time
             try { console.warn(`[mcp] short_descriptions missing for server '${name}' in subagent_config.json. Consider adding a concise hint (e.g., \"${name}(one‑line purpose)\").`); } catch {}
             parts.push(String(name));
           }
         }
-        if (parts.length) mcpToolsHint = ` MCP tools: ${parts.join(', ')}.`;
+        if (parts.length) mcpToolsHint = ` MCP tools (listed as tool_name (short description)): ${parts.join(', ')}. Provide 'tool' as "all" or a subset of the above.`;
       } catch {}
     }
 

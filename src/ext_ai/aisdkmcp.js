@@ -51,7 +51,7 @@ async function createMcpClientsFromConfig(conf) {
           : new StreamableHTTPClientTransport(url);
         const client = await experimental_createMCPClient({ transport });
         console.log(`[mcp] Connected to ${isSse ? 'SSE' : 'HTTP'} MCP server '${name}'.`);
-        clients.push(client);
+        clients.push({ name, client });
         continue;
       }
       if (cfg && typeof cfg.command === 'string' && cfg.command.trim()) {
@@ -60,7 +60,7 @@ async function createMcpClientsFromConfig(conf) {
         const transport = new StdioClientTransport({ command: cfg.command, args });
         const client = await experimental_createMCPClient({ transport });
         console.log(`[mcp] Connected to stdio MCP server '${name}'.`);
-        clients.push(client);
+        clients.push({ name, client });
         continue;
       }
     } catch (err) {
@@ -86,16 +86,18 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
   const conf = skipServers ? {} : await loadMcpConfig();
   const clients = skipServers ? [] : await createMcpClientsFromConfig(conf);
 
-  // Aggregate MCP tools (later ones override by name)
-  let mcpTools = {};
+  // Aggregate MCP tools per server
+  const perServerTools = {};
+  let totalCount = 0;
   try {
-    for (const c of clients) {
-      const t = await c.tools();
+    for (const { name, client } of clients) {
+      const t = await client.tools();
       const names = Object.keys(t || {});
-      console.log(`[mcp] Loaded ${names.length} tool(s) from an MCP client:`, names.slice(0, 20).join(', '));
-      mcpTools = { ...mcpTools, ...t };
+      perServerTools[name] = t || {};
+      totalCount += names.length;
+      console.log(`[mcp] Loaded ${names.length} tool(s) from '${name}':`, names.slice(0, 20).join(', '));
     }
-    console.log(`[mcp] Total aggregated tools: ${Object.keys(mcpTools).length}`);
+    console.log(`[mcp] Total aggregated tools: ${totalCount}`);
   } catch (e) {
     // If tools fail, continue without tools
     // eslint-disable-next-line no-console
@@ -108,19 +110,41 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
   try {
     const prompt = (String(systemPrompt || '').trim() ? `${String(systemPrompt).trim()}\n\n` : '') + String(userPrompt || '');
 
+    // Determine requested server names from 'tools' param: 'all' or an array of server names
+    let requestedServers = null; // null means 'all'
+    if (typeof tools === 'string') {
+      requestedServers = /^all$/i.test(tools.trim()) ? null : tools.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    } else if (Array.isArray(tools)) {
+      requestedServers = tools.map(v => String(v || '').trim()).filter(Boolean);
+    }
+    const availableServers = Object.keys(perServerTools);
+    let selectedServers = availableServers;
+    if (requestedServers && requestedServers.length) {
+      const reqSet = new Set(requestedServers);
+      const missing = requestedServers.filter(n => !availableServers.includes(n));
+      if (missing.length) {
+        throw new Error(`mcp_requested_servers_not_found: ${missing.join(', ')}`);
+      }
+      selectedServers = availableServers.filter(n => reqSet.has(n));
+    }
+    console.log('[mcp] Selected servers:', selectedServers.join(', '));
+
     // Instrument tools to capture toolcall history reliably regardless of provider step reporting
     const toolcall_history = [];
     const instrumentedTools = {};
-    for (const [toolName, def] of Object.entries(mcpTools)) {
-      if (!def || typeof def.execute !== 'function') { continue; }
-      instrumentedTools[toolName] = {
-        ...def,
-        execute: async (input, opts) => {
-          // Only log the input; do not log outputs to avoid large payloads.
-          toolcall_history.push({ type: 'call', toolName, input });
-          return await def.execute(input, opts);
-        },
-      };
+    for (const serverName of selectedServers) {
+      const tmap = perServerTools[serverName] || {};
+      for (const [toolName, def] of Object.entries(tmap)) {
+        if (!def || typeof def.execute !== 'function') continue;
+        instrumentedTools[toolName] = {
+          ...def,
+          execute: async (input, opts) => {
+            // Only log the input; do not log outputs to avoid large payloads.
+            toolcall_history.push({ type: 'call', server: serverName, toolName, input });
+            return await def.execute(input, opts);
+          },
+        };
+      }
     }
 
     const result = await generateText({
@@ -162,7 +186,7 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
     throw err;
   } finally {
     // Ensure we close clients
-    try { await Promise.all(clients.map((c) => c.close())); } catch {}
+    try { await Promise.all(clients.map((e) => e.client.close())); } catch {}
   }
 }
 

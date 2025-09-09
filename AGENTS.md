@@ -65,20 +65,20 @@ Minimal Node.js ESM app with Express + MCP Streamable HTTP:
 
 ## MCP Tools
 
-Expose these tools via MCP CallTool (Streamable HTTP):
-- `list_projects`: List all project names.
-- `init_project`: Create/init project `{ name, agent?, progress? }`. `progress` may include a list of structured task objects (see Tasks below).
-- `delete_project`: Delete a project `{ name }`.
-- `rename_project`: Rename a project `{ oldName, newName, comment? }`. Creates a new versioned commit; accepts optional `comment`.
-- `read_agent`: Read AGENTS.md `{ name, lineNumbers? }`. If `lineNumbers` is `true`, returns lines as `N|...`.
-- `write_agent`: Write AGENTS.md in `mode=full|patch|diff`. For patch/diff, provide a unified diff with `@@` hunks and lines prefixed with space/`+`/`-`. When deleting a markdown bullet that begins with `- `, start the diff line with `-- ` (delete marker + literal dash) to avoid ambiguity. Creates a new versioned commit; accepts optional `comment`. On success, responses include the updated `hash`.
-- `read_progress`: Read structured tasks `{ name, only? }`. Returns JSON `{ tasks, markdown }`, where `markdown` is a nested outline. `only` filters by `pending | in_progress | completed | archived` (synonyms accepted). Archived tasks are excluded by default; include them by requesting `archived`.
-- `progress_add`: Add structured tasks `{ name, item, comment? }` where `item` is an array of task objects. Duplicate `task_id` are skipped and returned via `exists/skipped`. Creates a new versioned commit if any new tasks are added; response includes `hash`.
-- `progress_set_new_state`: Update tasks by `task_id` (8-char) or by matching `task_info` substring `{ name, match, state?, task_info?, parent_id?, extra_note?, comment? }`. Completing or archiving cascades to all descendants. Lock rules apply: when a task or any ancestor is `completed` or `archived`, edits are blocked except unlocking the task itself to `pending`/`in_progress` (only if no ancestor is locked). Unlocking a parent propagates. Creates a new versioned commit when changes occur; response includes `hash`.
-- `generate_task_ids`: Generate N unique 8‑char IDs not used by this user `{ count? }`.
-- `get_agents_md_best_practices_and_examples`: Best‑practices + examples from `example_agent_md.json`. Default returns only `the_art_of_writing_agents_md`. Use `include='all'` or a string/array to filter by usecase/title.
-- `list_project_logs`: List commit logs for a project `{ name }`. Returns an ordered list of `{ hash, message, created_at }` for the current history (head-first).
-- `revert_project`: Revert a project to a previous version `{ name, hash }`. Reverting sets HEAD to that hash and trims `hash_history` to that point (no branches). Older commits remain in the DB but are hidden from regular logs.
+Expose these tools via MCP CallTool (Streamable HTTP). All tools operate by project_id (except init_project, which creates a new project by name and returns its id):
+- `list_projects`: Lists accessible projects. Returns `{ projects: [{ id, name, owner_id, permission, read_only }] }`.
+- `init_project`: Create/init project `{ name, agent?, progress? }`. Returns `{ id, name, hash }`.
+- `delete_project`: Delete a project `{ project_id }` (owner only).
+- `rename_project`: Rename a project `{ project_id, newName, comment? }` (owner only).
+- `read_agent`: Read AGENTS.md `{ project_id, lineNumbers? }` (RO/RW/owner).
+- `write_agent`: Write AGENTS.md `{ project_id, mode=full|patch|diff, content|patch, comment? }` (RW/owner). Patch/diff requires a unified diff. On success, responses include the updated `hash`. If the editor is a shared RW participant, the commit message is prefixed with `Modified by <user> - ...`.
+- `read_progress`: Read structured tasks `{ project_id, only? }` → `{ tasks, markdown }`. `only` filters by `pending | in_progress | completed | archived` (synonyms accepted). Archived tasks are excluded unless explicitly requested.
+- `progress_add`: Add structured tasks `{ project_id, item, comment? }`. Duplicate `task_id` are skipped in `skipped`. Creates a new commit; response includes `hash` when items were added.
+- `progress_set_new_state`: Update tasks `{ project_id, match, state?, task_info?, parent_id?, extra_note?, comment? }`. Completing or archiving cascades to descendants. Lock rules apply (cannot edit locked items unless unlocking).
+- `generate_task_ids`: Generate N unique 8‑char IDs `{ count? }`.
+- `get_agents_md_best_practices_and_examples`: Best‑practices + examples from `example_agent_md.json`.
+- `list_project_logs`: List commit logs `{ project_id }` → `{ logs: [{ hash, message, created_at }] }`.
+- `revert_project`: Revert a project `{ project_id, hash }`. On success, response includes `{ project_id, hash }`.
 
 Scratchpad (ephemeral) tools:
 - `scratchpad_initialize`: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
@@ -136,3 +136,64 @@ Set up `.env`:
 ```
 MAIN_API_KEY=change-me
 ```
+
+## Project REST API (/project) and Sharing Model
+
+Use these REST endpoints to manage cross-user sharing and visibility. All endpoints live under `/project` and require authentication.
+
+- Auth (admin): Bearer `MAIN_API_KEY` in `Authorization` header.
+- Auth (user): provide user apiKey (from `/auth/users`) as Bearer token or `?apiKey=...` query param.
+
+Endpoints:
+- `GET /project/list`
+  - Admin: returns `{ scope: 'admin', projects: [{ id, name, owner_id, owner_name }] }` across all users.
+  - User: returns `{ scope: 'user', projects: [{ id, name }] }` for owned + shared projects; read-only shares append `" (Read-Only)"` to `name`.
+
+- `POST /project/share`
+  - Body: `{ project_id, target_user_id, permission, revoke? }`
+  - `permission`: `'ro'` (read-only) or `'rw'` (read/write).
+  - Only the owner can share/revoke their projects; admins may share/revoke any.
+  - Response: `{ ok: true, project_id, owner_id, target_user_id, permission }` where `permission` reflects the resulting state (`'ro' | 'rw' | 'none'`).
+
+- `GET /project/status?project_id=...`
+  - Owner/Admin response: `{ owner: { id, name }, project: { id, name }, shared_read: [{ id, name }], shared_read_write: [{ id, name }] }`.
+  - Shared participant response: `{ owner: { id, name }, project: { id, name }, your_permission: 'ro'|'rw' }`.
+  - Others (no access): `404` with `{ error: 'project_not_found' }`.
+
+Sharing Data Model and Rules:
+- Project ownership stays with the original creator (row in `user_projects`).
+- Shares are stored as two JSON arrays on the project row:
+  - `ro_users_json`: user IDs with read-only access.
+  - `rw_users_json`: user IDs with read-write access.
+- A user may be in at most one list (server enforces moving between lists atomically when permission changes).
+
+Permissions and Effects:
+- Owner: full control, can share/revoke; owns all backups/version history.
+- Read-only (RO):
+  - Can list/see the project via REST and read via MCP tools.
+  - MCP write attempts return `{ error: 'read_only_project' }`.
+  - In REST listing, the project `name` includes `" (Read-Only)"` as a suffix for clarity.
+- Read-write (RW):
+  - Can read and write via MCP tools.
+  - All backups remain under the owner’s user_id.
+  - Commit messages for RW edits are prefixed with `"Modified by <userName|userId> - "` for clear attribution.
+
+MCP + IDs (important):
+- All MCP tools use `project_id` (except `init_project`, which creates by `name` and returns `id`).
+- Always call `list_projects` first to obtain `{ id }` and then pass `project_id` to subsequent MCP tools.
+
+Examples (curl):
+- Admin list all projects:
+  - `curl -H "Authorization: Bearer $MAIN_API_KEY" http://localhost:3000/project/list`
+- User list own + shared:
+  - `curl "http://localhost:3000/project/list?apiKey=$USER_API_KEY"`
+- Owner share RO to another user:
+  - `curl -X POST -H "Authorization: Bearer $OWNER_API_KEY" -H "Content-Type: application/json" \
+     -d '{"project_id":"<pid>","target_user_id":"<uid>","permission":"ro"}' \
+     http://localhost:3000/project/share`
+- Admin upgrade to RW:
+  - `curl -X POST -H "Authorization: Bearer $MAIN_API_KEY" -H "Content-Type: application/json" \
+     -d '{"project_id":"<pid>","target_user_id":"<uid>","permission":"rw"}' \
+     http://localhost:3000/project/share`
+- Status (owner/participant/admin):
+  - `curl -H "Authorization: Bearer $API_KEY" "http://localhost:3000/project/status?project_id=<pid>"`

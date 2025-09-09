@@ -180,7 +180,7 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
       toolcall_history,
     };
   } catch (err) {
-    console.log(err);
+    console.error(err);
     clearTimeout(hardTimer);
     // Re-throw to let caller capture and update run status
     throw err;

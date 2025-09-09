@@ -41,7 +41,7 @@ import {
   getSubagentRun as dbGetSubagentRun,
 } from './src/db.js';
 import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, listProjectLogs as vcListLogs, revertProject as vcRevertProject } from './src/version.js';
-import { runScratchpadSubagent } from './src/ext_ai/gemini.js';
+import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -496,6 +496,18 @@ function buildMcpServer(userId) {
       "Default returns only 'the_art_of_writing_agents_md' (best-practices)."
     ].join(' ') + ' ' + agentsReminder;
 
+    const meta = getProviderMeta();
+    const hasTools = Array.isArray(meta.tools) && meta.tools.length > 0;
+    const capLabels = {
+      grounding: 'grounding (search)',
+      crawling: 'crawling (web fetch)',
+      code_execution: 'code_execution (run code)',
+    };
+    const shown = hasTools ? meta.tools.filter(t => capLabels[t]).map(t => capLabels[t]) : [];
+    const toolsSentence = hasTools
+      ? `Available subagent tools: ${shown.join(', ')}. Provide 'tool' as "all" or a subset of the above.`
+      : `This subagent is configured with no tools; the 'tool' argument is ignored.`;
+
     const result = { tools: [
       {
         name: 'list_projects',
@@ -504,7 +516,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'scratchpad_subagent',
-        description: 'Start a subagent (Gemini) to work on a scratchpad task. Required: name (project), scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"). Available tools the subagent can use: grounding (search), crawling (web fetch), code_execution (run code). Provide tool as "all" or a subset of [grounding, crawling, code_execution]. The server auto-appends the scratchpad\'s common_memory to the prompt when present. The subagent appends its answer to the task\'s scratchpad and logs any sources/code it used into comments. Note that the subagent\'s context is isolated, they can ONLY see common_memory without anyother knowledge of the scratchpad or the project, so remember to update common_memory if required.',
+        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: name (project), scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"). ${toolsSentence} The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
         inputSchema: {
           type: 'object',
           properties: {

@@ -2,7 +2,7 @@
 
 ![](https://badge.mcpx.dev?type=server&features=tools 'MCP server with features')
 
-Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (currently Gemini with grounding) for solving focused tasks.
+Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (via Gemini, OpenAI, Groq, or OpenAI‑compatible) for solving focused tasks.
 
 Co-authored by Codex (OpenAI).
 
@@ -27,9 +27,9 @@ Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
 External AI (optional): set in `.env` when using the subagent tools.
 ```
 USE_EXTERNAL_AI=true
-AI_API_TYPE=google
+AI_API_TYPE=google   # google | openai | groq | openai_com
 AI_API_KEY=...   # required when enabled
-AI_MODEL="gemini-2.5-pro"  # optional
+AI_MODEL="gemini-2.5-pro"  # optional; default depends on provider
 AI_TIMEOUT=120              # optional
 ```
 
@@ -122,8 +122,35 @@ Scratchpad (ephemeral, per-session) tools:
 - scratchpad_append_common_memory: Append to the scratchpad’s shared memory `{ name, scratchpad_id, append }` where `append` is a string or array of strings. Returns the updated scratchpad.
 
 External AI subagent (shown only when `USE_EXTERNAL_AI` is not `false`):
-- scratchpad_subagent: Start a subagent to work on a scratchpad task `{ name, scratchpad_id, task_id, prompt, sys_prompt?, tool? }`. Chooses tools from `[grounding, crawling, code_execution]`. Auto‑appends `common_memory` to the prompt. May return early with `status: in_progress` and a `run_id`.
+- scratchpad_subagent: Start a subagent to work on a scratchpad task `{ name, scratchpad_id, task_id, prompt, sys_prompt?, tool? }`. Tools depend on provider (`AI_API_TYPE`). Canonical tools: `grounding` (search), `crawling` (web fetch), `code_execution` (run code). Auto‑appends `common_memory` to the prompt. May return early with `status: in_progress` and a `run_id`.
 - scratchpad_subagent_status: Check run status `{ name, run_id }`. Returns final status, or polls for up to ~25s when still running.
+
+### Providers and models
+
+- google (Gemini): gemini-2.5-pro, gemini-2.5-flash
+- openai (Responses API): gpt-5, gpt-5-mini, gpt-5-nano (reasoning + web search)
+- groq (Chat Completions): openai/gpt-oss-120b, openai/gpt-oss-20b
+- openai_com (OpenAI‑compatible Chat): depends on your endpoint; no subagent tools.
+
+Examples (.env):
+```
+# Gemini
+AI_API_TYPE=google
+AI_MODEL="gemini-2.5-pro"
+
+# OpenAI
+# AI_API_TYPE=openai
+# AI_MODEL="gpt-5-mini"
+
+# Groq
+# AI_API_TYPE=groq
+# AI_MODEL="openai/gpt-oss-120b"
+
+# OpenAI‑compatible (e.g., LM Studio)
+# AI_API_TYPE=compat
+# AI_BASE_ENDPOINT="http://localhost:1234/v1"
+# AI_MODEL="qwen/qwen3-4b-2507"
+```
 
 Notes:
 - Scratchpads are transient like RAM; no list/delete tools are provided here. An external cleanup tool is currently "expected" to remove them after the session.

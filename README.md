@@ -3,7 +3,7 @@
 ![](https://badge.mcpx.dev?type=server&features=tools 'MCP server with features')
 ![](https://badge.mcpx.dev?type=client&features=tools 'MCP client with features')
 
-Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (via Gemini, OpenAI, Groq, OpenAI‑compatible, or MCP + OpenAI‑compatible) for solving focused tasks.
+Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (via Gemini, OpenAI, Groq, OpenAI‑compatible, or MCP + OpenAI‑compatible) for solving focused tasks. An auth midware is also provided for user isolation and serving publicly.
 
 Co-authored by Codex (OpenAI).
 
@@ -95,7 +95,41 @@ graph LR
 - **Low main agent context**: Orchestrator only needs high-level results, not detailed research
 - **Persistent knowledge**: Project state survives across multiple chat sessions
 
-## Run
+## Automatic Install and User creation (Unix-like systems)
+
+- Without docker: (Install to `$HOME/.config/mcp-http-agent-md` and start with a default user)
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/benhaotang/mcp-http-agent-md/main/install/install.sh | bash
+  ```
+- With docker: (Data persist in `$HOME/.config/mcp-http-agent-md/data`)
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/benhaotang/mcp-http-agent-md/main/install/install-docker.sh | bash
+  ```
+
+## Manual Install
+
+First, clone the repo: `git clone https://github.com/benhaotang/mcp-http-agent-md.git`
+
+### Environments
+
+You can set all Environments defined in [.env.example](./.env.example) in Terminal via `export XXX=xxx`.
+
+If you prefer setting them via `.env`: `cp .env.example .env`
+
+- Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
+- External AI (optional): set in `.env` or ENV when using the subagent tools. Learn more about supported [Providers and models](#providers-and-models).
+```
+USE_EXTERNAL_AI=true
+AI_API_TYPE=google   # google | openai | groq | compat | mcp
+AI_API_KEY=...   # required when enabled
+AI_MODEL="gemini-2.5-pro"  # optional; default depends on provider
+AI_TIMEOUT=120              # optional
+```
+
+> [!NOTE]
+> For docker, we currently only support adding them via `-e XXX=xxx` for security. If you want to use `.env` file, remove it from `.dockerignore` and build the image locally. See [Docker](#docker).
+
+### Run with Node
 
 - pnpm (recommended):
   - Install: `pnpm install`
@@ -106,37 +140,25 @@ graph LR
   - Dev: `npx nodemon --watch index.js --ext js,mjs,cjs index.js`
   - Prod: `npm run start`
 
-Environment:
-```
-cp .env.example .env
-# edit MAIN_API_KEY
-```
-Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
+### Docker
 
-External AI (optional): set in `.env` when using the subagent tools.
-```
-USE_EXTERNAL_AI=true
-AI_API_TYPE=google   # google | openai | groq | compat | mcp
-AI_API_KEY=...   # required when enabled
-AI_MODEL="gemini-2.5-pro"  # optional; default depends on provider
-AI_TIMEOUT=120              # optional
-```
-
-## Docker
-
-- From GitHub Package: `docker pull ghcr.io/benhaotang/mcp-http-agent-md:main`
+- From GitHub Package: `docker pull ghcr.io/benhaotang/mcp-http-agent-md:latest`
   - Run (persist DB and set admin key):
    ```
     docker run -it --restart always \
       -p 3000:3000 \
       -e MAIN_API_KEY=change-me \
       -e HOST=0.0.0.0 \
-      -v $(pwd)/data:/app/data\
-      ghcr.io/benhaotang/mcp-http-agent-md:v0.0.3
+      -v $(pwd)/data:/app/data \
+      --name mcp-http-agent-md \
+      ghcr.io/benhaotang/mcp-http-agent-md:latest
   ```
   - Add `-e AI_API_KEY=xxx -e USE_EXTERNAL_AI=true` for using subagents.
 - Local Build: `docker build -t mcp-http-agent-md .`
-- Admin API: `http://localhost:3000/auth` (Bearer `MAIN_API_KEY`), generate a `USER_API_KEY` first, see `## Auth`
+
+## Endpoints
+
+- Admin API: `http://localhost:3000/auth` (Bearer `MAIN_API_KEY`), **generate a `USER_API_KEY` first**, see [Auth](#auth)
 - MCP endpoint: `POST http://localhost:3000/mcp?apiKey=USER_API_KEY`
   - Local 
     ```json
@@ -160,7 +182,7 @@ AI_TIMEOUT=120              # optional
     }
     ```
 
-## Auth
+## Auth and Admin
 
 - MCP: supply user `apiKey` via query `?apiKey=...` or `Authorization: Bearer ...`.
 - Admin: use `Authorization: Bearer MAIN_API_KEY`.
@@ -172,6 +194,14 @@ curl -X POST http://localhost:3000/auth/users \
   -H "Content-Type: application/json" \
   -d '{"name":"alice"}'
 ```
+### Definition
+
+Base: `/auth` (Bearer `MAIN_API_KEY`)
+- POST `/auth/users`: Create user → `{ id, apiKey, name? }`
+- GET `/auth/users`: List users (`?reveal=true` to show full keys)
+- GET `/auth/users/:id`: Get user
+- POST `/auth/users/:id/regenerate`: Rotate API key
+- DELETE `/auth/users/:id`: Delete user
 
 ## MCP Endpoint
 
@@ -184,7 +214,7 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/list"}'
 ```
 
-## Tools
+### Tools
 
 - list_projects: List all project names.
 - init_project: Create/init project `{ name, agent?, progress? }`. Immediately creates an initial backup (commit) and returns `hash`.
@@ -214,13 +244,19 @@ External AI subagent (shown only when `USE_EXTERNAL_AI` is not `false`):
 - scratchpad_subagent: Start a subagent to work on a scratchpad task `{ name, scratchpad_id, task_id, prompt, sys_prompt?, tool? }`. Tools depend on provider (`AI_API_TYPE`). Canonical tools: `grounding` (search), `crawling` (web fetch), `code_execution` (run code). Auto‑appends `common_memory` to the prompt. May return early with `status: in_progress` and a `run_id`.
 - scratchpad_subagent_status: Check run status `{ name, run_id }`. Returns final status, or polls for up to ~25s when still running.
 
-### Providers and models
+Notes:
+- Scratchpads are transient like RAM; no list/delete tools are provided here. An external cleanup tool is currently "expected" to remove them after the session.
+- Agents must address scratchpads by `(project name, scratchpad_id)` to reopen an existing one during the same session.
+
+Project selection: All task tools take a `name` (project name) parameter; the server resolves it to the internal project_id. You never need to provide a `project_id`.
+
+## Providers and models
 
 - google (Gemini): gemini-2.5-pro, gemini-2.5-flash
-- openai (Responses API): gpt-5, gpt-5-mini, gpt-5-nano (reasoning + web search)
-- groq (Chat Completions): openai/gpt-oss-120b, openai/gpt-oss-20b
+- openai (Responses API): currently only gpt-5, gpt-5-mini, gpt-5-nano 
+- groq (Chat Completions): currently only openai/gpt-oss-120b, openai/gpt-oss-20b
 - openai_com (OpenAI‑compatible Chat): depends on your endpoint; no subagent tools.
-- mcp (AI SDK OpenAI‑compatible + MCP tools): use `AI_BASE_ENDPOINT` and `AI_MODEL`; configure MCP servers in `subagent_config.json`.
+- mcp (OpenAI‑compatible + MCP tools): use `AI_BASE_ENDPOINT` and `AI_MODEL`; configure MCP servers in `subagent_config.json`. **Requires the endpoint and model combo to support function calling**
 
 Examples (.env):
 ```
@@ -251,25 +287,6 @@ MCP provider configuration:
 - Put MCP client config in `subagent_config.json` at the repo root. Example is included in this repo.
 - Define servers under `mcpServers`. For remote servers use `{ "serverUrl": "https://.../mcp" }` (HTTP) or `.../sse` (SSE; legacy but supported). For local stdio servers use `{ "command": "...", "args": [ ... ] }`.
 - Add a short one‑line `short_descriptions` per server to help the agent choose (recommended). See the repo’s `subagent_config.json` for a minimal example.
-
-Notes:
-- Scratchpads are transient like RAM; no list/delete tools are provided here. An external cleanup tool is currently "expected" to remove them after the session.
-- Agents must address scratchpads by `(project name, scratchpad_id)` to reopen an existing one during the same session.
-
-Project selection: All task tools take a `name` (project name) parameter; the server resolves it to the internal project_id. You never need to provide a `project_id`.
-
-### Versioning
-- Edits to `AGENTS.md` or tasks create a backup (commit). Some tools accept `comment` for a commit message; when omitted, the server uses a timestamp + action. Responses include the updated `hash`.
-- Use `list_project_logs` to inspect history and `revert_project` to restore a previous snapshot; revert trims history after the target hash.
-
-## REST Admin API
-
-Base: `/auth` (Bearer `MAIN_API_KEY`)
-- POST `/auth/users`: Create user → `{ id, apiKey, name? }`
-- GET `/auth/users`: List users (`?reveal=true` to show full keys)
-- GET `/auth/users/:id`: Get user
-- POST `/auth/users/:id/regenerate`: Rotate API key
-- DELETE `/auth/users/:id`: Delete user
 
 ## License
 

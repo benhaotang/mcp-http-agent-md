@@ -7,6 +7,94 @@ Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured ta
 
 Co-authored by Codex (OpenAI).
 
+## Architecture Overview
+
+This project implements a hierarchical context management system for AI agents working on long-term projects:
+
+```mermaid
+graph LR
+    subgraph "Full Project Knowledge"
+        PK["📚 Entire Project<br/>• All code files<br/>• All documentation<br/>• Web resources<br/>• Tool outputs<br/>MASSIVE CONTEXT"]
+    end
+    
+    subgraph "Compressed Knowledge"
+        A["📄 AGENTS.md<br/>(Essential Knowledge)"]
+        P["📋 progress.md<br/>(Task Board)"]
+    end
+    
+    subgraph "Main Agent"
+        MA["🧠 Orchestrator<br/>LOW CONTEXT<br/>• Reads compressed knowledge<br/>• Spawns scratchpads<br/>• Updates project state"]
+    end
+    
+    subgraph "Scratchpad"
+        CM["Common Memory<br/>(Shared Context)"]
+        
+        subgraph "Task Pool"
+            T1["Task 1"]
+            T2["Task 2"]
+            T3["Task ..."]
+        end
+        
+        subgraph "Subagents"
+            SA1["🤖 Agent 1<br/>HIGH CONTEXT"]
+            SA2["🤖 Agent 2<br/>HIGH CONTEXT"]
+        end
+    end
+    
+    %% Knowledge compression flow
+    PK --> |compresses to| A
+    PK --> |compresses to| P
+    
+    %% Main agent reads compressed knowledge
+    A --> MA
+    P --> MA
+    
+    %% Main agent creates scratchpad with smaller tasks
+    MA --> |break into tasks| T1
+    MA --> |break into tasks| T2
+    MA --> |break into tasks| T3
+    MA --> |maintains| CM
+    
+    %% Main agent can read/write directly
+    MA <--> |read/write| CM
+    MA <--> |read/write| T1
+    MA <--> |read/write| T2
+    MA <--> |read/write| T3
+    
+    %% Tasks spawn subagents
+    T1 --> |spawns| SA1
+    T2 --> |spawns| SA2
+    
+    %% Subagents get context and work on specific tasks
+    SA1 --> |full access| PK
+    SA2 --> |full access| PK
+    CM --> |shared context| SA1
+    CM --> |shared context| SA2
+    
+    %% Subagents report back to their tasks
+    SA1 --> |results/comments| T1
+    SA2 --> |results/comments| T2
+    
+    %% Main agent updates compressed knowledge
+    MA --> |updates| A
+    MA --> |updates| P
+
+    style PK fill:#ffecb3
+    style A fill:#e1f5fe
+    style P fill:#e8f5e8
+    style MA fill:#ffebee
+    style CM fill:#f3e5f5
+    style SA1 fill:#fff3e0
+    style SA2 fill:#fff3e0
+```
+
+**Key Benefits:**
+- **Project-wide context**: AGENTS.md stores accumulated knowledge, progress.md tracks long-term tasks, read more from [agents.md](https://agents.ms).
+- **Task-wide context**: Scratchpads provide temporary but focused, manageable chunks with shared memory
+- **Subagent isolation**: Each subagent only sees relevant context, preventing information overload
+- **Low main agent context**: Orchestrator only needs high-level results, not detailed research
+- **Persistent knowledge**: Project state survives across multiple chat sessions
+
 ## Run
 
 - pnpm (recommended):

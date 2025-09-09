@@ -52,7 +52,7 @@ async function run() {
       AI_MODEL: process.env.AI_MODEL || 'gemini-2.5-flash',
       AI_TIMEOUT: process.env.AI_TIMEOUT || '45',
       AI_API_KEY: process.env.AI_API_KEY || 'sk-1234',
-      AI_BASE_ENDPOINT: process.env.AI_BASE_ENDPOINT || 'sk-1234',
+      AI_BASE_ENDPOINT: process.env.AI_BASE_ENDPOINT || '', // Other than compat, no URL needs to be provided
       MAIN_API_KEY: 'test-main-key',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

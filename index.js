@@ -39,9 +39,12 @@ import {
   updateScratchpadTasks as dbUpdateScratchpadTasks,
   appendScratchpadCommonMemory as dbAppendScratchpadCommonMemory,
   getSubagentRun as dbGetSubagentRun,
+  listProjectsForUserWithShares as dbListProjectsWithShares,
+  resolveProjectAccess as dbResolveProjectAccess,
 } from './src/db.js';
 import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, listProjectLogs as vcListLogs, revertProject as vcRevertProject } from './src/version.js';
 import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
+import { buildProjectsRouter } from './src/share.js';
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -52,10 +55,11 @@ function validateProjectName(name) {
   return /^[A-Za-z0-9._\- ]{1,100}$/.test(trimmed);
 }
 // DB-backed project and file operations (per-user)
-function userOps(userId) {
+function userOps(userId, userName) {
   return {
     async listProjects() {
-      return dbListProjects(userId);
+      const rows = await dbListProjectsWithShares(userId);
+      return rows.map(r => r.name + (r.permission === 'ro' && r.owner_id !== userId ? ' (Read-Only)' : ''));
     },
     async initProject(name, { agent = defaultAgentMd(name), progress = [] } = {}) {
       if (!validateProjectName(name)) throw new Error('Invalid project name');
@@ -97,11 +101,19 @@ function userOps(userId) {
     },
     async readDoc(name, which) {
       if (!validateProjectName(name)) throw new Error('Invalid project name');
-      return dbReadDoc(userId, name, which);
+      const acc = await dbResolveProjectAccess(userId, name);
+      if (!acc) throw new Error('project not found');
+      if (acc.ambiguous) throw new Error('ambiguous_project_name');
+      return dbReadDoc(acc.owner_id, name, which);
     },
     async writeDoc(name, which, content) {
       if (!validateProjectName(name)) throw new Error('Invalid project name');
-      await dbWriteDoc(userId, name, which, content);
+      const acc = await dbResolveProjectAccess(userId, name);
+      if (!acc) throw new Error('project not found');
+      if (acc.ambiguous) throw new Error('ambiguous_project_name');
+      if (acc.permission === 'ro') { const e = new Error('read_only_project'); e.code = 'read_only_project'; throw e; }
+      await dbWriteDoc(acc.owner_id, name, which, content);
+      return { modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : null, ownerId: acc.owner_id };
     },
   };
 }
@@ -477,8 +489,8 @@ function renderTasksMarkdown(rows) {
 }
 
 // Build a fresh MCP server instance for each request (stateless mode)
-function buildMcpServer(userId) {
-  const ops = userOps(userId);
+function buildMcpServer(userId, userName) {
+  const ops = userOps(userId, userName);
   const server = new Server(
     { name: 'mcp-http-agent-md', version: '0.0.5' },
     { capabilities: { tools: {} } }
@@ -866,39 +878,50 @@ function buildMcpServer(userId) {
       }
       case 'read_agent': {
         const { name: projName, lineNumbers } = args || {};
-        const content = await ops.readDoc(projName, 'agent');
-        if (lineNumbers) {
-          const lines = String(content ?? '').split('\n');
-          const numbered = lines.map((l, idx) => `${idx + 1}|${l.replace(/\r$/, '')}`).join('\n');
-          return okText(numbered);
+        try {
+          const content = await ops.readDoc(projName, 'agent');
+          if (lineNumbers) {
+            const lines = String(content ?? '').split('\n');
+            const numbered = lines.map((l, idx) => `${idx + 1}|${l.replace(/\r$/, '')}`).join('\n');
+            return okText(numbered);
+          }
+          return okText(content);
+        } catch (err) {
+          const msg = String(err?.message || err);
+          const code = /ambiguous_project_name/i.test(msg) ? 'ambiguous_project_name' : (/project not found/i.test(msg) ? 'project_not_found' : 'read_failed');
+          return okText(JSON.stringify({ error: code, message: msg }));
         }
-        return okText(content);
       }
       case 'write_agent': {
         const { name: projName } = args || {};
         let { content, patch, mode, comment } = args || {};
         const editMode = String(mode || (patch ? 'patch' : 'full')).toLowerCase();
         try {
+          const acc = await dbResolveProjectAccess(userId, projName);
+          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (acc.ambiguous) return okText(JSON.stringify({ error: 'ambiguous_project_name', message: 'Multiple projects with this name are shared with you; ask the owner to rename.' }));
+          if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
+
           if (editMode === 'full') {
             if (typeof content !== 'string') throw new Error('content (string) required for full mode');
-            await ops.writeDoc(projName, 'agent', content);
+            await dbWriteDoc(acc.owner_id, projName, 'agent', content);
             let hash = null;
-            try { hash = await vcCommitProject(userId, projName, { action: 'write_agent', comment }); } catch {}
+            try { hash = await vcCommitProject(acc.owner_id, projName, { action: 'write_agent', comment, modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : undefined }); } catch {}
             return okText(JSON.stringify({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8'), hash }));
           }
           if (editMode === 'patch' || editMode === 'diff') {
             if (typeof patch !== 'string') throw new Error('patch (unified diff string) required for patch/diff mode');
-            const current = await ops.readDoc(projName, 'agent');
+            const current = await dbReadDoc(acc.owner_id, projName, 'agent');
             const updated = applyUnifiedDiff(current, patch);
-            await ops.writeDoc(projName, 'agent', updated);
+            await dbWriteDoc(acc.owner_id, projName, 'agent', updated);
             let hash = null;
-            try { hash = await vcCommitProject(userId, projName, { action: 'write_agent', comment }); } catch {}
+            try { hash = await vcCommitProject(acc.owner_id, projName, { action: 'write_agent', comment, modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : undefined }); } catch {}
             return okText(JSON.stringify({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8'), hash }));
           }
           throw new Error(`Unknown mode: ${mode}`);
         } catch (err) {
           const msg = String(err?.message || err || 'write failed');
-          const code = /project not found/i.test(msg) ? 'project_not_found' : (/patch/i.test(msg) ? 'patch_failed' : 'write_failed');
+          const code = /project_not_found/i.test(msg) || /project not found/i.test(msg) ? 'project_not_found' : (/patch/i.test(msg) ? 'patch_failed' : (/read_only_project/i.test(msg) ? 'read_only_project' : 'write_failed'));
           const suggest = code === 'project_not_found' ? 'init_project' : (code === 'patch_failed' ? 'read_agent' : undefined);
           const payload = { error: code, message: msg };
           if (suggest) payload.suggest = suggest;
@@ -913,16 +936,19 @@ function buildMcpServer(userId) {
         // If a filter includes 'archived', include archived alongside other requested statuses.
         const filterProvided = typeof only !== 'undefined';
         try {
+          const acc = await dbResolveProjectAccess(userId, projName);
+          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (acc.ambiguous) return okText(JSON.stringify({ error: 'ambiguous_project_name', message: 'Multiple projects with this name are shared with you; ask the owner to rename.' }));
           // If a filter was provided but normalized to empty (no recognized statuses), return empty set.
           if (filterProvided && wanted.length === 0) {
             return okText(JSON.stringify({ tasks: [], markdown: '' }));
           }
-          const rows = await dbListTasks(userId, projName, { only: wanted });
+          const rows = await dbListTasks(acc.owner_id, projName, { only: wanted });
           const markdown = renderTasksMarkdown(rows);
           return okText(JSON.stringify({ tasks: rows, markdown }));
         } catch (err) {
           const msg = String(err?.message || err);
-          const code = /project not found/i.test(msg) ? 'project_not_found' : 'read_failed';
+          const code = /project not found/i.test(msg) ? 'project_not_found' : (/ambiguous_project_name/i.test(msg) ? 'ambiguous_project_name' : 'read_failed');
           return okText(JSON.stringify({ error: code, message: msg }));
         }
       }
@@ -1085,6 +1111,10 @@ function buildMcpServer(userId) {
       case 'progress_add': {
         const { name: projName, item, comment } = args || {};
         try {
+          const acc = await dbResolveProjectAccess(userId, projName);
+          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (acc.ambiguous) return okText(JSON.stringify({ error: 'ambiguous_project_name', message: 'Multiple projects with this name are shared with you; ask the owner to rename.' }));
+          if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
           // Enforce arrays: either an array directly, or a JSON string that parses to an array
           let incoming;
           if (Array.isArray(item)) {
@@ -1107,21 +1137,25 @@ function buildMcpServer(userId) {
           if (!tasks.length && invalid.length) {
             return okText(JSON.stringify({ added: [], exists: [], invalid, notice: 'No valid tasks to add' }));
           }
-          const res = await dbAddTasks(userId, projName, tasks);
+          const res = await dbAddTasks(acc.owner_id, projName, tasks);
           let hash = null;
           if ((res.added?.length || 0) > 0) {
-            try { hash = await vcCommitProject(userId, projName, { action: 'progress_add', comment }); } catch {}
+            try { hash = await vcCommitProject(acc.owner_id, projName, { action: 'progress_add', comment, modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : undefined }); } catch {}
           }
           return okText(JSON.stringify({ added: res.added, skipped: res.exists, invalid, hash }));
         } catch (err) {
           const msg = String(err?.message || err || 'add failed');
-          const code = /project not found/i.test(msg) ? 'project_not_found' : 'add_failed';
+          const code = /project not found/i.test(msg) ? 'project_not_found' : (/ambiguous_project_name/i.test(msg) ? 'ambiguous_project_name' : 'add_failed');
           return okText(JSON.stringify({ error: code, message: msg }));
         }
       }
       case 'progress_set_new_state': {
         const { name: projName, match, state, task_info, parent_id, extra_note, comment } = args || {};
         try {
+          const acc = await dbResolveProjectAccess(userId, projName);
+          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (acc.ambiguous) return okText(JSON.stringify({ error: 'ambiguous_project_name', message: 'Multiple projects with this name are shared with you; ask the owner to rename.' }));
+          if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
           const normalizedState = typeof state === 'undefined' ? undefined : normalizeStatus(state);
           // Enforce arrays: either an array directly, or a JSON string that parses to an array of strings
           let matchList = [];
@@ -1143,7 +1177,7 @@ function buildMcpServer(userId) {
           if (!matchList.length) throw new Error('match required');
           const ids = matchList.filter(validateTaskId);
           const terms = matchList.filter(s => !validateTaskId(s));
-          const res = await dbSetTasksState(userId, projName, { matchIds: ids, matchText: terms, state: normalizedState, task_info, parent_id, extra_note });
+          const res = await dbSetTasksState(acc.owner_id, projName, { matchIds: ids, matchText: terms, state: normalizedState, task_info, parent_id, extra_note });
           if (res.changedIds.length === 0) {
             if ((res.notMatched?.length || 0) > 0 && (res.forbidden?.length || 0) === 0) {
               return okText(JSON.stringify({ error: 'task_not_found', message: 'No matching tasks found for provided match terms', notMatched: res.notMatched }));
@@ -1151,11 +1185,11 @@ function buildMcpServer(userId) {
             return okText(JSON.stringify({ changed: [], state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, notice: 'No items changed. Items may be locked or list changed. Pull updated list?', suggest: 'read_progress' }));
           }
           let hash = null;
-          try { hash = await vcCommitProject(userId, projName, { action: 'progress_set_new_state', comment }); } catch {}
+          try { hash = await vcCommitProject(acc.owner_id, projName, { action: 'progress_set_new_state', comment, modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : undefined }); } catch {}
           return okText(JSON.stringify({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, hash }));
         } catch (err) {
           const msg = String(err?.message || err || 'set_state failed');
-          const code = /project not found/i.test(msg) ? 'project_not_found' : 'update_failed';
+          const code = /project not found/i.test(msg) ? 'project_not_found' : (/ambiguous_project_name/i.test(msg) ? 'ambiguous_project_name' : 'update_failed');
           return okText(JSON.stringify({ error: code, message: msg }));
         }
       }
@@ -1185,7 +1219,10 @@ function buildMcpServer(userId) {
       case 'list_project_logs': {
         const { name: projName } = args || {};
         try {
-          const logs = await vcListLogs(userId, projName);
+          const acc = await dbResolveProjectAccess(userId, projName);
+          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (acc.ambiguous) return okText(JSON.stringify({ error: 'ambiguous_project_name', message: 'Multiple projects with this name are shared with you; ask the owner to rename.' }));
+          const logs = await vcListLogs(acc.owner_id, projName);
           return okText(JSON.stringify({ logs }));
         } catch (err) {
           const msg = String(err?.message || err || 'list logs failed');
@@ -1196,12 +1233,17 @@ function buildMcpServer(userId) {
       case 'revert_project': {
         const { name: projName, hash } = args || {};
         try {
-          const res = await vcRevertProject(userId, projName, String(hash || ''));
+          const acc = await dbResolveProjectAccess(userId, projName);
+          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (acc.ambiguous) return okText(JSON.stringify({ error: 'ambiguous_project_name', message: 'Multiple projects with this name are shared with you; ask the owner to rename.' }));
+          if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
+          const res = await vcRevertProject(acc.owner_id, projName, String(hash || ''));
           return okText(JSON.stringify({ name: projName, hash: res.hash }));
         } catch (err) {
           const msg = String(err?.message || err || 'revert failed');
           let code = 'revert_failed';
           if (/project not found/i.test(msg)) code = 'project_not_found';
+          else if (/read_only_project/i.test(msg)) code = 'read_only_project';
           else if (/hash_not_found/i.test(msg)) code = 'hash_not_found';
           return okText(JSON.stringify({ error: code, message: msg }));
         }
@@ -1230,7 +1272,7 @@ app.post(BASE_PATH, apiKeyQueryMiddleware, async (req, res) => {
   if (req.user?.id) res.setHeader('X-User-Id', req.user.id);
   // Rebuild server with user context
   try {
-    const server = buildMcpServer(req.user?.id);
+    const server = buildMcpServer(req.user?.id, req.user?.name || null);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => {
       transport.close();
@@ -1268,6 +1310,10 @@ app.get('/', (req, res) => {
 
 // Admin auth router under /auth (Bearer MAIN_API_KEY)
 app.use('/auth', buildAuthRouter());
+
+// Projects REST API (admin + user apiKey)
+// Mount under /project: exposes /project/list, /project/share, /project/status
+app.use('/project', buildProjectsRouter());
 
 // Start server
 async function start() {

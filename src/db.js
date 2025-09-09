@@ -48,6 +48,8 @@ async function openDb() {
       progress_json TEXT NOT NULL,
       hash TEXT,
       hash_history TEXT,
+      ro_users_json TEXT, -- JSON array of user IDs with read-only access
+      rw_users_json TEXT, -- JSON array of user IDs with read-write access
       created_at TEXT NOT NULL,
       updated_at TEXT,
       UNIQUE(user_id, name),
@@ -140,6 +142,21 @@ async function openDb() {
       const cols3 = new Set((rs3 && rs3[0] && rs3[0].values ? rs3[0].values : []).map(r => String(r[1])));
       if (!cols3.has('hash_history')) {
         console.error("Migration failed: 'hash_history' column still missing from user_projects after ALTER TABLE.");
+      }
+    }
+    // Add share columns if missing
+    if (!cols.has('ro_users_json')) {
+      try {
+        db.exec("ALTER TABLE user_projects ADD COLUMN ro_users_json TEXT");
+      } catch (err) {
+        console.error("Failed to add 'ro_users_json' column to user_projects:", err);
+      }
+    }
+    if (!cols.has('rw_users_json')) {
+      try {
+        db.exec("ALTER TABLE user_projects ADD COLUMN rw_users_json TEXT");
+      } catch (err) {
+        console.error("Failed to add 'rw_users_json' column to user_projects:", err);
       }
     }
   } catch {}
@@ -268,6 +285,156 @@ export async function listProjects(userId) {
   }
   stmt.free();
   return names;
+}
+
+// ---------------- Sharing & Project Listing (with shares) ----------------
+
+function parseJsonArrayOfStrings(s) {
+  try {
+    const v = JSON.parse(String(s || '[]'));
+    if (Array.isArray(v)) return v.map(x => String(x)).filter(Boolean);
+  } catch {}
+  return [];
+}
+
+function uniqueStrings(list) {
+  const seen = new Set();
+  const out = [];
+  for (const v of list) {
+    if (!seen.has(v)) { seen.add(v); out.push(v); }
+  }
+  return out;
+}
+
+export async function getProjectById(projectId) {
+  const db = await openDb();
+  const stmt = db.prepare('SELECT id, user_id, name, ro_users_json, rw_users_json, created_at, updated_at FROM user_projects WHERE id = $id');
+  stmt.bind({ $id: String(projectId) });
+  const ok = stmt.step();
+  if (!ok) { stmt.free(); return null; }
+  const r = stmt.getAsObject();
+  stmt.free();
+  return {
+    id: r.id,
+    name: r.name,
+    owner_id: r.user_id,
+    ro_users: parseJsonArrayOfStrings(r.ro_users_json),
+    rw_users: parseJsonArrayOfStrings(r.rw_users_json),
+    created_at: r.created_at,
+    updated_at: r.updated_at || null,
+  };
+}
+
+export async function listAllProjectsAdmin() {
+  const db = await openDb();
+  const sql = `SELECT up.id, up.name, up.user_id, u.name AS owner_name
+               FROM user_projects up LEFT JOIN users u ON up.user_id = u.id
+               ORDER BY COALESCE(u.name, ''), up.name`;
+  const stmt = db.prepare(sql);
+  const rows = [];
+  while (stmt.step()) {
+    const r = stmt.getAsObject();
+    rows.push({ id: r.id, name: r.name, owner_id: r.user_id, owner_name: r.owner_name || null });
+  }
+  stmt.free();
+  return rows;
+}
+
+export async function listProjectsForUserWithShares(userId) {
+  const db = await openDb();
+  // Pre-select candidates by LIKE to reduce scan; we'll filter precisely after parsing JSON
+  const like = `%${userId}%`;
+  const stmt = db.prepare(`SELECT id, name, user_id, ro_users_json, rw_users_json FROM user_projects
+                           WHERE user_id = $u OR ro_users_json LIKE $l OR rw_users_json LIKE $l`);
+  stmt.bind({ $u: userId, $l: like });
+  const list = [];
+  while (stmt.step()) {
+    const r = stmt.getAsObject();
+    const ro = parseJsonArrayOfStrings(r.ro_users_json);
+    const rw = parseJsonArrayOfStrings(r.rw_users_json);
+    let permission = null;
+    if (r.user_id === userId) permission = 'owner';
+    else if (rw.includes(userId)) permission = 'rw';
+    else if (ro.includes(userId)) permission = 'ro';
+    if (permission) list.push({ id: r.id, name: r.name, owner_id: r.user_id, permission });
+  }
+  stmt.free();
+  // Return owned + shared with dedupe
+  return list;
+}
+
+// Resolve the effective access for a user to a project by name.
+// Returns one of:
+// - { owner_id, project_id, permission: 'owner'|'ro'|'rw' }
+// - { ambiguous: true, matches: Array<{ owner_id, project_id, permission }> }
+// - null when no access
+export async function resolveProjectAccess(userId, name) {
+  const db = await openDb();
+  const like = `%${userId}%`;
+  // Preselect by name and rough membership; validate precisely in JS
+  const stmt = db.prepare(`SELECT id, user_id, name, ro_users_json, rw_users_json FROM user_projects
+                           WHERE name = $n AND (user_id = $u OR ro_users_json LIKE $l OR rw_users_json LIKE $l)`);
+  stmt.bind({ $n: String(name), $u: userId, $l: like });
+  const matches = [];
+  while (stmt.step()) {
+    const r = stmt.getAsObject();
+    const ro = parseJsonArrayOfStrings(r.ro_users_json);
+    const rw = parseJsonArrayOfStrings(r.rw_users_json);
+    let permission = null;
+    if (r.user_id === userId) permission = 'owner';
+    else if (rw.includes(userId)) permission = 'rw';
+    else if (ro.includes(userId)) permission = 'ro';
+    if (permission) matches.push({ owner_id: r.user_id, project_id: r.id, permission });
+  }
+  stmt.free();
+  if (!matches.length) return null;
+  if (matches.length > 1) return { ambiguous: true, matches };
+  return matches[0];
+}
+
+export async function setProjectShare(ownerId, projectId, targetUserId, permission) {
+  const db = await openDb();
+  const proj = await getProjectById(projectId);
+  if (!proj) throw new Error('project not found');
+  if (proj.owner_id !== ownerId) throw new Error('forbidden');
+  const ro = new Set(proj.ro_users);
+  const rw = new Set(proj.rw_users);
+  // Clean up from both first
+  ro.delete(targetUserId);
+  rw.delete(targetUserId);
+  if (permission === 'ro') ro.add(targetUserId);
+  if (permission === 'rw') rw.add(targetUserId);
+  const now = new Date().toISOString();
+  const upd = db.prepare('UPDATE user_projects SET ro_users_json = $ro, rw_users_json = $rw, updated_at = $now WHERE id = $id');
+  upd.bind({ $ro: JSON.stringify(Array.from(ro.values())), $rw: JSON.stringify(Array.from(rw.values())), $now: now, $id: proj.id });
+  upd.step();
+  upd.free();
+  await persistDb();
+  return { project_id: proj.id, owner_id: proj.owner_id, ro_users: Array.from(ro.values()), rw_users: Array.from(rw.values()) };
+}
+
+export async function revokeProjectShare(ownerId, projectId, targetUserId) {
+  const db = await openDb();
+  const proj = await getProjectById(projectId);
+  if (!proj) throw new Error('project not found');
+  if (proj.owner_id !== ownerId) throw new Error('forbidden');
+  const ro = new Set(proj.ro_users);
+  const rw = new Set(proj.rw_users);
+  ro.delete(targetUserId);
+  rw.delete(targetUserId);
+  const now = new Date().toISOString();
+  const upd = db.prepare('UPDATE user_projects SET ro_users_json = $ro, rw_users_json = $rw, updated_at = $now WHERE id = $id');
+  upd.bind({ $ro: JSON.stringify(Array.from(ro.values())), $rw: JSON.stringify(Array.from(rw.values())), $now: now, $id: proj.id });
+  upd.step();
+  upd.free();
+  await persistDb();
+  return { project_id: proj.id, owner_id: proj.owner_id, ro_users: Array.from(ro.values()), rw_users: Array.from(rw.values()) };
+}
+
+export async function getProjectShareInfo(projectId) {
+  const proj = await getProjectById(projectId);
+  if (!proj) throw new Error('project not found');
+  return proj;
 }
 
 export async function getProjectByName(userId, name) {

@@ -188,7 +188,7 @@ export async function runScratchpadSubagent(
   const softReturnMs = 25000;
 
   if (!infer) {
-    await dbSetSubagentRunStatus(userId, projectName, run_id, "failure");
+    await dbSetSubagentRunStatus(userId, projectId, run_id, "failure");
     return {
       run_id,
       status: "failure",
@@ -196,7 +196,7 @@ export async function runScratchpadSubagent(
     };
   }
   if (!apiKey) {
-    await dbSetSubagentRunStatus(userId, projectName, run_id, "failure");
+    await dbSetSubagentRunStatus(userId, projectId, run_id, "failure");
     return {
       run_id,
       status: "failure",

@@ -137,10 +137,9 @@ async function run() {
     assert(/Modified by/i.test(lastMsg), 'Commit message should include Modified by for RW edits');
 
     console.log('MCP share tests passed');
-    process.exit(0);
   } catch (err) {
     console.error('MCP share tests failed:', err);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     // cleanup
     try { child.kill(); } catch {}

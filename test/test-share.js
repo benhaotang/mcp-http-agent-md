@@ -175,10 +175,9 @@ async function run() {
     assert(u2Status2.status === 404, 'After revoke, user2 should not access status');
 
     console.log('All share tests passed');
-    process.exit(0);
   } catch (err) {
     console.error('Share tests failed:', err);
-    process.exit(1);
+    process.exitCode = 1;
   } finally {
     try { child.kill(); } catch {}
   }

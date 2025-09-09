@@ -15,7 +15,7 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
     clearTimeout(hardTimer);
     const choice = (Array.isArray(completion?.choices) ? completion.choices : [])[0];
     const text = String(choice?.message?.content || '');
-    return { text, codeSnippets: [], codeResults: [], urls: [] };
+    return { text, codeSnippets: [], codeResults: [], urls: [], toolcall_history: [] };
   } catch (err) {
     clearTimeout(hardTimer);
     console.error(err);

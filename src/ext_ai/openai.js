@@ -63,7 +63,7 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
       text = reasoningSummary + (text ? `\n\n${text}` : '');
     }
 
-    return { text, codeSnippets: [], codeResults: [], urls };
+    return { text, codeSnippets: [], codeResults: [], urls, toolcall_history: [] };
   } catch (err) {
     clearTimeout(hardTimer);
     console.error(err);

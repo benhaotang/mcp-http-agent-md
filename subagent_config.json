@@ -1,0 +1,17 @@
+{
+    "mcpServers": {
+        "filesystem": {
+            "short_descriptions":"Access filesystem",
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "./data"
+            ]
+        },
+        "deepwiki": {
+            "short_descriptions":"Read docs about a package",
+            "serverUrl": "https://mcp.deepwiki.com/sse"
+        }
+    }
+}    

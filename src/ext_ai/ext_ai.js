@@ -58,7 +58,8 @@ function resolveApiType(val) {
   const v = String(val || '').toLowerCase().trim();
   if (v === 'gemini') return 'google';
   if (v === 'oa' || v === 'oai' || v === 'openai') return 'openai';
-  if (v === 'openai-compatible' || v === 'openai_compat' || v === 'openai_compatible' || v === 'compat') return 'openai_com';
+  if (v === 'openai-compatible' || v === 'openai_compat' || v === 'openai_compatible' || v === 'compat' || v === 'openai_com') return 'openai_com';
+  if (v === 'mcp') return 'mcp';
   return v || 'google';
 }
 
@@ -72,6 +73,8 @@ function defaultModelFor(provider) {
       return 'gpt-4o-mini';
     case 'groq':
       return 'openai/gpt-oss-120b';
+    case 'mcp':
+      return 'gpt-4o-mini';
     default:
       return '';
   }
@@ -85,6 +88,9 @@ function providerCapabilities(provider) {
       return ['grounding'];
     case 'groq':
       return ['grounding', 'code_execution'];
+    case 'mcp':
+      // MCP tools are provided externally via subagent_config.json; no built-in caps needed here.
+      return [];
     case 'openai_com':
     default:
       return [];
@@ -112,6 +118,10 @@ async function selectProvider(apiType) {
     }
     if (key === "openai_com") {
       const mod = await import("./openai_com.js");
+      return { key, infer: mod.infer };
+    }
+    if (key === "mcp") {
+      const mod = await import("./aisdkmcp.js");
       return { key, infer: mod.infer };
     }
     return { key, infer: null };

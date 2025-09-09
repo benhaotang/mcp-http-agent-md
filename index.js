@@ -480,7 +480,7 @@ function renderTasksMarkdown(rows) {
 function buildMcpServer(userId) {
   const ops = userOps(userId);
   const server = new Server(
-    { name: 'mcp-http-agent-md', version: '0.0.4' },
+    { name: 'mcp-http-agent-md', version: '0.0.5' },
     { capabilities: { tools: {} } }
   );
 

@@ -5,24 +5,24 @@ function defaultMessage(action) {
   return `${ts} ${action}`;
 }
 
-export async function onInitProject(userId, name) {
-  const hash = await ensureProjectVersionInitialized(userId, name);
+export async function onInitProject(userId, projectId) {
+  const hash = await ensureProjectVersionInitialized(userId, projectId);
   return hash;
 }
 
-export async function commitProject(userId, name, { comment, action, modifiedBy } = {}) {
+export async function commitProject(userId, projectId, { comment, action, modifiedBy } = {}) {
   let message = String(comment || '').trim() || defaultMessage(action || 'commit');
   if (modifiedBy && String(modifiedBy).trim()) {
     message = `Modified by ${String(modifiedBy).trim()} - ` + message;
   }
-  const hash = await createProjectBackup(userId, name, message);
+  const hash = await createProjectBackup(userId, projectId, message);
   return hash;
 }
 
-export async function listProjectLogs(userId, name) {
-  return await dbListLogs(userId, name);
+export async function listProjectLogs(userId, projectId) {
+  return await dbListLogs(userId, projectId);
 }
 
-export async function revertProject(userId, name, hash) {
-  return await revertProjectToHash(userId, name, hash);
+export async function revertProject(userId, projectId, hash) {
+  return await revertProjectToHash(userId, projectId, hash);
 }

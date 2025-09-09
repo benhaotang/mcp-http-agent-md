@@ -275,6 +275,7 @@ export default {
 // ---------------- Project + Files APIs (per-user) ----------------
 
 export async function listProjects(userId) {
+  // Legacy helper (not used by MCP tools). Prefer listProjectsForUserWithShares.
   const db = await openDb();
   const stmt = db.prepare('SELECT name FROM user_projects WHERE user_id = $u ORDER BY name');
   stmt.bind({ $u: userId });
@@ -363,33 +364,17 @@ export async function listProjectsForUserWithShares(userId) {
   return list;
 }
 
-// Resolve the effective access for a user to a project by name.
-// Returns one of:
-// - { owner_id, project_id, permission: 'owner'|'ro'|'rw' }
-// - { ambiguous: true, matches: Array<{ owner_id, project_id, permission }> }
-// - null when no access
-export async function resolveProjectAccess(userId, name) {
-  const db = await openDb();
-  const like = `%${userId}%`;
-  // Preselect by name and rough membership; validate precisely in JS
-  const stmt = db.prepare(`SELECT id, user_id, name, ro_users_json, rw_users_json FROM user_projects
-                           WHERE name = $n AND (user_id = $u OR ro_users_json LIKE $l OR rw_users_json LIKE $l)`);
-  stmt.bind({ $n: String(name), $u: userId, $l: like });
-  const matches = [];
-  while (stmt.step()) {
-    const r = stmt.getAsObject();
-    const ro = parseJsonArrayOfStrings(r.ro_users_json);
-    const rw = parseJsonArrayOfStrings(r.rw_users_json);
-    let permission = null;
-    if (r.user_id === userId) permission = 'owner';
-    else if (rw.includes(userId)) permission = 'rw';
-    else if (ro.includes(userId)) permission = 'ro';
-    if (permission) matches.push({ owner_id: r.user_id, project_id: r.id, permission });
-  }
-  stmt.free();
-  if (!matches.length) return null;
-  if (matches.length > 1) return { ambiguous: true, matches };
-  return matches[0];
+// Resolve effective access for a user to a project by ID.
+// Returns { owner_id, project_id, permission } or null.
+export async function resolveProjectAccess(userId, projectId) {
+  const proj = await getProjectById(projectId);
+  if (!proj) return null;
+  let permission = null;
+  if (proj.owner_id === userId) permission = 'owner';
+  else if (proj.rw_users.includes(userId)) permission = 'rw';
+  else if (proj.ro_users.includes(userId)) permission = 'ro';
+  if (!permission) return null;
+  return { owner_id: proj.owner_id, project_id: proj.id, permission };
 }
 
 export async function setProjectShare(ownerId, projectId, targetUserId, permission) {
@@ -437,21 +422,10 @@ export async function getProjectShareInfo(projectId) {
   return proj;
 }
 
-export async function getProjectByName(userId, name) {
+export async function getProjectFullById(ownerId, projectId) {
   const db = await openDb();
-  const stmt = db.prepare('SELECT id, name FROM user_projects WHERE user_id = $u AND name = $n');
-  stmt.bind({ $u: userId, $n: name });
-  const ok = stmt.step();
-  if (!ok) { stmt.free(); return null; }
-  const r = stmt.getAsObject();
-  stmt.free();
-  return { id: r.id, name: r.name };
-}
-
-export async function getProjectFull(userId, name) {
-  const db = await openDb();
-  const stmt = db.prepare('SELECT id, name, agent_json, progress_json, hash, hash_history, created_at, updated_at FROM user_projects WHERE user_id = $u AND name = $n');
-  stmt.bind({ $u: userId, $n: name });
+  const stmt = db.prepare('SELECT id, name, user_id, agent_json, progress_json, hash, hash_history, created_at, updated_at FROM user_projects WHERE id = $pid AND user_id = $u');
+  stmt.bind({ $pid: String(projectId), $u: ownerId });
   const ok = stmt.step();
   if (!ok) { stmt.free(); return null; }
   const r = stmt.getAsObject();
@@ -459,6 +433,7 @@ export async function getProjectFull(userId, name) {
   return {
     id: r.id,
     name: r.name,
+    owner_id: r.user_id,
     agent_json: r.agent_json || JSON.stringify({ content: '' }),
     progress_json: r.progress_json || JSON.stringify({ content: '' }),
     hash: r.hash || null,
@@ -486,6 +461,7 @@ export async function initProject(userId, name, { agentJson, progressJson }) {
   const now = new Date().toISOString();
   if (!userId) throw new Error('user not authenticated');
   if (!name) throw new Error('project name required');
+  const id = newUserId();
   const upsert = db.prepare(`
     INSERT INTO user_projects (id, user_id, name, agent_json, progress_json, created_at, updated_at)
     VALUES ($id, $u, $n, $a, $p, $c, $uAt)
@@ -494,37 +470,45 @@ export async function initProject(userId, name, { agentJson, progressJson }) {
       progress_json = excluded.progress_json,
       updated_at = excluded.updated_at
   `);
-  upsert.bind({ $id: newUserId(), $u: userId, $n: name, $a: agentJson, $p: progressJson, $c: now, $uAt: now });
+  upsert.bind({ $id: id, $u: userId, $n: name, $a: agentJson, $p: progressJson, $c: now, $uAt: now });
   upsert.step();
   upsert.free();
+  // Read back the project id (handles the update-on-conflict case)
+  const sel = db.prepare('SELECT id FROM user_projects WHERE user_id = $u AND name = $n');
+  sel.bind({ $u: userId, $n: name });
+  let pid = id;
+  if (sel.step()) {
+    pid = String(sel.getAsObject().id);
+  }
+  sel.free();
   await persistDb();
-  return { name };
+  return { id: pid, name };
 }
 
-export async function deleteProject(userId, name) {
+export async function deleteProject(userId, projectId) {
   const db = await openDb();
-  const stmt = db.prepare('DELETE FROM user_projects WHERE user_id = $u AND name = $n');
-  stmt.bind({ $u: userId, $n: name });
+  const stmt = db.prepare('DELETE FROM user_projects WHERE user_id = $u AND id = $pid');
+  stmt.bind({ $u: userId, $pid: String(projectId) });
   stmt.step();
   stmt.free();
   await persistDb();
 }
 
-export async function renameProject(userId, oldName, newName) {
+export async function renameProject(userId, projectId, newName) {
   const db = await openDb();
   const now = new Date().toISOString();
-  const stmt = db.prepare('UPDATE user_projects SET name = $new, updated_at = $now WHERE user_id = $u AND name = $old');
-  stmt.bind({ $new: newName, $now: now, $u: userId, $old: oldName });
+  const stmt = db.prepare('UPDATE user_projects SET name = $new, updated_at = $now WHERE user_id = $u AND id = $pid');
+  stmt.bind({ $new: newName, $now: now, $u: userId, $pid: String(projectId) });
   stmt.step();
   stmt.free();
   await persistDb();
   return { name: newName };
 }
 
-export async function readDoc(userId, name, which) {
+export async function readDoc(userId, projectId, which) {
   const db = await openDb();
-  const stmt = db.prepare('SELECT agent_json, progress_json FROM user_projects WHERE user_id = $u AND name = $n');
-  stmt.bind({ $u: userId, $n: name });
+  const stmt = db.prepare('SELECT agent_json, progress_json FROM user_projects WHERE user_id = $u AND id = $pid');
+  stmt.bind({ $u: userId, $pid: String(projectId) });
   const exists = stmt.step();
   if (!exists) { stmt.free(); throw new Error('project not found'); }
   const r = stmt.getAsObject();
@@ -538,21 +522,21 @@ export async function readDoc(userId, name, which) {
   }
 }
 
-export async function writeDoc(userId, name, which, content) {
+export async function writeDoc(userId, projectId, which, content) {
   const db = await openDb();
   const now = new Date().toISOString();
   const col = which === 'agent' ? 'agent_json' : 'progress_json';
   const json = JSON.stringify({ content: String(content ?? '') });
   // Require project to exist; do not auto-create on write
-  const existsStmt = db.prepare('SELECT id FROM user_projects WHERE user_id = $u AND name = $n');
-  existsStmt.bind({ $u: userId, $n: name });
+  const existsStmt = db.prepare('SELECT id FROM user_projects WHERE user_id = $u AND id = $pid');
+  existsStmt.bind({ $u: userId, $pid: String(projectId) });
   const found = existsStmt.step();
   existsStmt.free();
   if (!found) {
     throw new Error('project not found');
   }
-  const stmt = db.prepare(`UPDATE user_projects SET ${col} = $val, updated_at = $now WHERE user_id = $u AND name = $n`);
-  stmt.bind({ $val: json, $now: now, $u: userId, $n: name });
+  const stmt = db.prepare(`UPDATE user_projects SET ${col} = $val, updated_at = $now WHERE user_id = $u AND id = $pid`);
+  stmt.bind({ $val: json, $now: now, $u: userId, $pid: String(projectId) });
   stmt.step();
   stmt.free();
   await persistDb();
@@ -622,9 +606,9 @@ async function buildProjectSnapshot(db, { userId, projectRow }) {
   return snapshot;
 }
 
-export async function ensureProjectVersionInitialized(userId, name) {
+export async function ensureProjectVersionInitialized(userId, projectId) {
   const db = await openDb();
-  const proj = await getProjectFull(userId, name);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   if (proj.hash && proj.hash.trim()) return proj.hash;
   const now = new Date().toISOString();
@@ -643,13 +627,13 @@ export async function ensureProjectVersionInitialized(userId, name) {
   return hash;
 }
 
-export async function createProjectBackup(userId, name, message) {
+export async function createProjectBackup(userId, projectId, message) {
   const db = await openDb();
   // Ensure exists and initialized
-  const proj0 = await getProjectFull(userId, name);
+  const proj0 = await getProjectFullById(userId, projectId);
   if (!proj0) throw new Error('project not found');
-  if (!proj0.hash) await ensureProjectVersionInitialized(userId, name);
-  const proj = await getProjectFull(userId, name);
+  if (!proj0.hash) await ensureProjectVersionInitialized(userId, projectId);
+  const proj = await getProjectFullById(userId, projectId);
   const now = new Date().toISOString();
   const snapshot = await buildProjectSnapshot(db, { userId, projectRow: proj });
   const hash = computeHashForSnapshot(snapshot);
@@ -668,12 +652,12 @@ export async function createProjectBackup(userId, name, message) {
   return hash;
 }
 
-export async function listProjectLogs(userId, name) {
+export async function listProjectLogs(userId, projectId) {
   const db = await openDb();
-  const proj = await getProjectFull(userId, name);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
-  if (!proj.hash) await ensureProjectVersionInitialized(userId, name);
-  const cur = await getProjectFull(userId, name);
+  if (!proj.hash) await ensureProjectVersionInitialized(userId, projectId);
+  const cur = await getProjectFullById(userId, projectId);
   let history = [];
   try { history = JSON.parse(cur.hash_history || '[]'); if (!Array.isArray(history)) history = []; } catch { history = []; }
   const all = new Map();
@@ -687,9 +671,9 @@ export async function listProjectLogs(userId, name) {
   return history.map(h => all.get(String(h))).filter(Boolean);
 }
 
-export async function revertProjectToHash(userId, name, targetHash) {
+export async function revertProjectToHash(userId, projectId, targetHash) {
   const db = await openDb();
-  const proj = await getProjectFull(userId, name);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const sel = db.prepare('SELECT snapshot_json FROM backups WHERE user_id = $u AND project_id = $p AND hash = $h');
   sel.bind({ $u: userId, $p: proj.id, $h: targetHash });
@@ -744,9 +728,9 @@ export async function revertProjectToHash(userId, name, targetHash) {
 
 // ---------------- Structured Tasks APIs ----------------
 
-export async function listTasks(userId, projectName, { only } = {}) {
+export async function listTasks(userId, projectId, { only } = {}) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const rows = [];
   let query = 'SELECT task_id, task_info, parent_id, status, extra_note, created_at, updated_at FROM project_tasks WHERE user_id = $u AND project_id = $p';
@@ -779,9 +763,9 @@ export async function listTasks(userId, projectName, { only } = {}) {
   return rows;
 }
 
-export async function addTasks(userId, projectName, tasks) {
+export async function addTasks(userId, projectId, tasks) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const now = new Date().toISOString();
   const added = [];
@@ -818,9 +802,9 @@ export async function addTasks(userId, projectName, tasks) {
   return { added, exists };
 }
 
-export async function replaceTasks(userId, projectName, tasks) {
+export async function replaceTasks(userId, projectId, tasks) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   // Delete existing tasks for this project
   const del = db.prepare('DELETE FROM project_tasks WHERE user_id = $u AND project_id = $p');
@@ -829,12 +813,12 @@ export async function replaceTasks(userId, projectName, tasks) {
   del.free();
   await persistDb();
   // Add all new tasks
-  return await addTasks(userId, projectName, tasks);
+  return await addTasks(userId, projectId, tasks);
 }
 
-export async function setTasksState(userId, projectName, { matchIds = [], matchText = [], state, task_info, parent_id, extra_note }) {
+export async function setTasksState(userId, projectId, { matchIds = [], matchText = [], state, task_info, parent_id, extra_note }) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const now = new Date().toISOString();
   const changedIds = new Set();
@@ -961,9 +945,9 @@ function getLockInfo(db, { userId, projectId, tid }) {
   return { selfLocked, ancestorLocked: false, selfStatus };
 }
 
-export async function deleteAllTasks(userId, projectName) {
+export async function deleteAllTasks(userId, projectId) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const del = db.prepare('DELETE FROM project_tasks WHERE user_id = $u AND project_id = $p');
   del.bind({ $u: userId, $p: proj.id });
@@ -1008,9 +992,9 @@ function normalizeScratchpadTasks(incoming, projectId) {
   return { tasks, invalid };
 }
 
-export async function initScratchpad(userId, projectName, scratchpadId, tasksInput) {
+export async function initScratchpad(userId, projectId, scratchpadId, tasksInput) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   // Generate an ID when not provided; otherwise validate the given one
   let sid = scratchpadId && typeof scratchpadId === 'string' ? scratchpadId.trim() : '';
@@ -1048,12 +1032,12 @@ export async function initScratchpad(userId, projectName, scratchpadId, tasksInp
   ins.step();
   ins.free();
   await persistDb();
-  return await getScratchpad(userId, projectName, sid, { includeInvalid: invalid });
+  return await getScratchpad(userId, projectId, sid, { includeInvalid: invalid });
 }
 
-export async function getScratchpad(userId, projectName, scratchpadId, { includeInvalid } = {}) {
+export async function getScratchpad(userId, projectId, scratchpadId, { includeInvalid } = {}) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const sel = db.prepare('SELECT id, scratchpad_id, tasks_json, common_memory, created_at, updated_at FROM scratchpads WHERE user_id = $u AND project_id = $p AND scratchpad_id = $sid');
   sel.bind({ $u: userId, $p: proj.id, $sid: scratchpadId });
@@ -1078,9 +1062,9 @@ export async function getScratchpad(userId, projectName, scratchpadId, { include
   return out;
 }
 
-export async function updateScratchpadTasks(userId, projectName, scratchpadId, updates) {
+export async function updateScratchpadTasks(userId, projectId, scratchpadId, updates) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const sel = db.prepare('SELECT id, tasks_json FROM scratchpads WHERE user_id = $u AND project_id = $p AND scratchpad_id = $sid');
   sel.bind({ $u: userId, $p: proj.id, $sid: scratchpadId });
@@ -1117,12 +1101,12 @@ export async function updateScratchpadTasks(userId, projectName, scratchpadId, u
   upd.step();
   upd.free();
   await persistDb();
-  return { updated, notFound, scratchpad: await getScratchpad(userId, projectName, scratchpadId) };
+  return { updated, notFound, scratchpad: await getScratchpad(userId, projectId, scratchpadId) };
 }
 
-export async function appendScratchpadCommonMemory(userId, projectName, scratchpadId, toAppend) {
+export async function appendScratchpadCommonMemory(userId, projectId, scratchpadId, toAppend) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const sel = db.prepare('SELECT id, common_memory FROM scratchpads WHERE user_id = $u AND project_id = $p AND scratchpad_id = $sid');
   sel.bind({ $u: userId, $p: proj.id, $sid: scratchpadId });
@@ -1135,7 +1119,7 @@ export async function appendScratchpadCommonMemory(userId, projectName, scratchp
     .map(v => coerceString(v).trim())
     .filter(s => s.length > 0);
   if (!normalized.length) {
-    return await getScratchpad(userId, projectName, scratchpadId);
+    return await getScratchpad(userId, projectId, scratchpadId);
   }
   const sep = row.common_memory && !row.common_memory.endsWith('\n') ? '\n' : '';
   const add = normalized.join('\n');
@@ -1146,7 +1130,7 @@ export async function appendScratchpadCommonMemory(userId, projectName, scratchp
   upd.step();
   upd.free();
   await persistDb();
-  return await getScratchpad(userId, projectName, scratchpadId);
+  return await getScratchpad(userId, projectId, scratchpadId);
 }
 
 // ---------------- Subagent Runs APIs ----------------
@@ -1157,9 +1141,9 @@ function normalizeRunStatus(s) {
   return 'pending';
 }
 
-export async function createSubagentRun(userId, projectName, runId, status = 'pending') {
+export async function createSubagentRun(userId, projectId, runId, status = 'pending') {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const now = new Date().toISOString();
   const stmt = db.prepare(`
@@ -1173,9 +1157,9 @@ export async function createSubagentRun(userId, projectName, runId, status = 'pe
   return { run_id: String(runId), status: normalizeRunStatus(status) };
 }
 
-export async function setSubagentRunStatus(userId, projectName, runId, status) {
+export async function setSubagentRunStatus(userId, projectId, runId, status) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const now = new Date().toISOString();
   const stmt = db.prepare('UPDATE subagent_runs SET status = $st, updated_at = $now WHERE user_id = $u AND project_id = $p AND run_id = $rid');
@@ -1183,12 +1167,12 @@ export async function setSubagentRunStatus(userId, projectName, runId, status) {
   stmt.step();
   stmt.free();
   await persistDb();
-  return await getSubagentRun(userId, projectName, runId);
+  return await getSubagentRun(userId, projectId, runId);
 }
 
-export async function getSubagentRun(userId, projectName, runId) {
+export async function getSubagentRun(userId, projectId, runId) {
   const db = await openDb();
-  const proj = await getProjectByName(userId, projectName);
+  const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
   const sel = db.prepare('SELECT run_id, status, created_at, updated_at FROM subagent_runs WHERE user_id = $u AND project_id = $p AND run_id = $rid');
   sel.bind({ $u: userId, $p: proj.id, $rid: String(runId) });

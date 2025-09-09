@@ -132,13 +132,13 @@ async function selectProvider(apiType) {
 
 export async function runScratchpadSubagent(
   userId,
-  { name, scratchpad_id, task_id, prompt, sys_prompt, tool }
+  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool }
 ) {
   // Validate required args
   const sid = String(scratchpad_id || "").trim();
   const tid = String(task_id || "").trim();
   const userPrompt = String(prompt || "").trim();
-  const projectName = String(name || "").trim();
+  const projectId = String(project_id || "").trim();
   const run_id = newRunId();
 
   if (!sid || !tid || !userPrompt) {
@@ -148,24 +148,24 @@ export async function runScratchpadSubagent(
       error: "scratchpad_id, task_id and prompt are required",
     };
   }
-  if (!projectName) {
-    return { run_id, status: "failure", error: "project_name_required" };
+  if (!projectId) {
+    return { run_id, status: "failure", error: "project_id_required" };
   }
 
   // Record run as pending before any long-running work
-  await dbCreateSubagentRun(userId, projectName, run_id, "pending");
+  await dbCreateSubagentRun(userId, projectId, run_id, "pending");
 
   // Load current scratchpad to read existing fields and common_memory
   let sp;
   try {
-    sp = await dbGetScratchpad(userId, projectName, sid);
+    sp = await dbGetScratchpad(userId, projectId, sid);
   } catch (err) {
-    await dbSetSubagentRunStatus(userId, projectName, run_id, "failure");
+    await dbSetSubagentRunStatus(userId, projectId, run_id, "failure");
     return { run_id, status: "failure", error: "scratchpad_not_found" };
   }
   const task = (sp.tasks || []).find((t) => String(t.task_id) === tid);
   if (!task) {
-    await dbSetSubagentRunStatus(userId, projectName, run_id, "failure");
+    await dbSetSubagentRunStatus(userId, projectId, run_id, "failure");
     return { run_id, status: "failure", error: "task_not_found_in_scratchpad" };
   }
 
@@ -236,7 +236,7 @@ export async function runScratchpadSubagent(
   const systemPrompt = String(sys_prompt || defaultSys);
 
   const runWork = async () => {
-    await dbSetSubagentRunStatus(userId, projectName, run_id, "in_progress");
+    await dbSetSubagentRunStatus(userId, projectId, run_id, "in_progress");
     try {
       const result = await infer({
         apiKey,
@@ -294,13 +294,13 @@ export async function runScratchpadSubagent(
         commentsAppend
       ).trim();
 
-      await dbUpdateScratchpadTasks(userId, projectName, sid, [
+      await dbUpdateScratchpadTasks(userId, projectId, sid, [
         { task_id: tid, scratchpad: newScratchpad, comments: newComments },
       ]);
-      await dbSetSubagentRunStatus(userId, projectName, run_id, "success");
+      await dbSetSubagentRunStatus(userId, projectId, run_id, "success");
       return { run_id, status: "success" };
     } catch (err) {
-      await dbSetSubagentRunStatus(userId, projectName, run_id, "failure");
+      await dbSetSubagentRunStatus(userId, projectId, run_id, "failure");
       return {
         run_id,
         status: "failure",

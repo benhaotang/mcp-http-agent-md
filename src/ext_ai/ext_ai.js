@@ -58,7 +58,8 @@ function resolveApiType(val) {
   const v = String(val || '').toLowerCase().trim();
   if (v === 'gemini') return 'google';
   if (v === 'oa' || v === 'oai' || v === 'openai') return 'openai';
-  if (v === 'openai-compatible' || v === 'openai_compat' || v === 'openai_compatible' || v === 'compat') return 'openai_com';
+  if (v === 'openai-compatible' || v === 'openai_compat' || v === 'openai_compatible' || v === 'compat' || v === 'openai_com') return 'openai_com';
+  if (v === 'mcp') return 'mcp';
   return v || 'google';
 }
 
@@ -72,6 +73,8 @@ function defaultModelFor(provider) {
       return 'gpt-4o-mini';
     case 'groq':
       return 'openai/gpt-oss-120b';
+    case 'mcp':
+      return 'gpt-4o-mini';
     default:
       return '';
   }
@@ -85,6 +88,9 @@ function providerCapabilities(provider) {
       return ['grounding'];
     case 'groq':
       return ['grounding', 'code_execution'];
+    case 'mcp':
+      // MCP tools are provided externally via subagent_config.json; no built-in caps needed here.
+      return [];
     case 'openai_com':
     default:
       return [];
@@ -112,6 +118,10 @@ async function selectProvider(apiType) {
     }
     if (key === "openai_com") {
       const mod = await import("./openai_com.js");
+      return { key, infer: mod.infer };
+    }
+    if (key === "mcp") {
+      const mod = await import("./aisdkmcp.js");
       return { key, infer: mod.infer };
     }
     return { key, infer: null };
@@ -196,9 +206,33 @@ export async function runScratchpadSubagent(
 
   // Compute provider-supported tools and filter the request
   const caps = providerCapabilities(providerKey);
-  const chosenTools = requestedTools.length ? requestedTools.filter(t => caps.includes(t)) : caps;
-  const toolNamesForPrompt = chosenTools.join(', ');
-  const defaultSys = `You are a general problem-solving agent with access to ${toolNamesForPrompt || 'no external tools'}. Keep answers concise and accurate.`;
+  let chosenTools = requestedTools.length ? requestedTools.filter(t => caps.includes(t)) : caps;
+
+  // For MCP provider, interpret the raw 'tool' argument as specific MCP tool names (or 'all')
+  let mcpToolSelection = null; // null means 'all'
+  if (providerKey === 'mcp') {
+    const raw = tool;
+    if (raw == null) {
+      mcpToolSelection = 'all';
+    } else if (typeof raw === 'string') {
+      const val = raw.trim();
+      mcpToolSelection = /^all$/i.test(val)
+        ? 'all'
+        : val.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    } else if (Array.isArray(raw)) {
+      const arr = raw.map(v => String(v || '').trim()).filter(Boolean);
+      mcpToolSelection = arr.length === 1 && /^all$/i.test(arr[0]) ? 'all' : arr;
+    } else {
+      mcpToolSelection = 'all';
+    }
+  }
+
+  const toolNamesForPrompt = providerKey === 'mcp'
+    ? (mcpToolSelection === 'all' || (Array.isArray(mcpToolSelection) && mcpToolSelection.length === 0)
+        ? 'MCP tools'
+        : `MCP tools (${(mcpToolSelection || []).join(', ')})`)
+    : (chosenTools.join(', ') || 'no external tools');
+  const defaultSys = `You are a general problem-solving agent with access to ${toolNamesForPrompt}. Keep answers concise and accurate.`;
   const systemPrompt = String(sys_prompt || defaultSys);
 
   const runWork = async () => {
@@ -210,7 +244,7 @@ export async function runScratchpadSubagent(
         baseUrl,
         systemPrompt,
         userPrompt: finalPrompt,
-        tools: chosenTools,
+        tools: providerKey === 'mcp' ? (mcpToolSelection || 'all') : chosenTools,
         timeoutSec: aiTimeoutSec,
       });
 

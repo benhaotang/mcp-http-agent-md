@@ -18,11 +18,14 @@
     "dev": "nodemon --watch index.js --ext js,mjs,cjs index.js",
     "start": "node index.js",
     "test": "node test/test.js",
-    "test:subagent": "node test/test-subagent.js"
+    "test:subagent": "node test/test-subagent.js",
+    "test:mcp": "node test/mcp.js"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^1.0.15",
     "@google/genai": "^0.11.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "ai": "^5.0.39",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "groq-sdk": "^0.32.0",

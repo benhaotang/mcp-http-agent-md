@@ -1,8 +1,9 @@
 # mcp-http-agent-md
 
 ![](https://badge.mcpx.dev?type=server&features=tools 'MCP server with features')
+![](https://badge.mcpx.dev?type=client&features=tools 'MCP client with features')
 
-Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (via Gemini, OpenAI, Groq, or OpenAI‑compatible) for solving focused tasks.
+Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (via Gemini, OpenAI, Groq, OpenAI‑compatible, or MCP + OpenAI‑compatible) for solving focused tasks.
 
 Co-authored by Codex (OpenAI).
 
@@ -27,7 +28,7 @@ Server defaults: `HOST=localhost`, `PORT=3000`, `BASE_PATH=/mcp`.
 External AI (optional): set in `.env` when using the subagent tools.
 ```
 USE_EXTERNAL_AI=true
-AI_API_TYPE=google   # google | openai | groq | openai_com
+AI_API_TYPE=google   # google | openai | groq | compat | mcp
 AI_API_KEY=...   # required when enabled
 AI_MODEL="gemini-2.5-pro"  # optional; default depends on provider
 AI_TIMEOUT=120              # optional
@@ -131,6 +132,7 @@ External AI subagent (shown only when `USE_EXTERNAL_AI` is not `false`):
 - openai (Responses API): gpt-5, gpt-5-mini, gpt-5-nano (reasoning + web search)
 - groq (Chat Completions): openai/gpt-oss-120b, openai/gpt-oss-20b
 - openai_com (OpenAI‑compatible Chat): depends on your endpoint; no subagent tools.
+- mcp (AI SDK OpenAI‑compatible + MCP tools): use `AI_BASE_ENDPOINT` and `AI_MODEL`; configure MCP servers in `subagent_config.json`.
 
 Examples (.env):
 ```
@@ -150,7 +152,17 @@ AI_MODEL="gemini-2.5-pro"
 # AI_API_TYPE=compat
 # AI_BASE_ENDPOINT="http://localhost:1234/v1"
 # AI_MODEL="qwen/qwen3-4b-2507"
+
+# MCP + OpenAI‑compatible
+# AI_API_TYPE=mcp
+# AI_BASE_ENDPOINT="http://localhost:1234/v1"
+# AI_MODEL="qwen/qwen3-4b-2507"
 ```
+
+MCP provider configuration:
+- Put MCP client config in `subagent_config.json` at the repo root. Example is included in this repo.
+- Define servers under `mcpServers`. For remote servers use `{ "serverUrl": "https://.../mcp" }` (HTTP) or `.../sse` (SSE; legacy but supported). For local stdio servers use `{ "command": "...", "args": [ ... ] }`.
+- Add a short one‑line `short_descriptions` per server to help the agent choose (recommended). See the repo’s `subagent_config.json` for a minimal example.
 
 Notes:
 - Scratchpads are transient like RAM; no list/delete tools are provided here. An external cleanup tool is currently "expected" to remove them after the session.

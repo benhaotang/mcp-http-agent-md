@@ -508,6 +508,29 @@ function buildMcpServer(userId) {
       ? `Available subagent tools: ${shown.join(', ')}. Provide 'tool' as "all" or a subset of the above.`
       : `This subagent is configured with no tools; the 'tool' argument is ignored.`;
 
+    // For provider 'mcp', surface MCP server tool short descriptions from subagent_config.json
+    let mcpToolsHint = '';
+    if (String(meta.key) === 'mcp') {
+      try {
+        const cfgPath = path.join(process.cwd(), 'subagent_config.json');
+        const raw = fs.readFileSync(cfgPath, 'utf-8');
+        const json = JSON.parse(raw);
+        const servers = json?.mcpServers || {};
+        const parts = [];
+        for (const [name, cfg] of Object.entries(servers)) {
+          const desc = String(cfg?.short_descriptions || '').trim();
+          if (desc) {
+            parts.push(`${name} (${desc})`);
+          } else {
+            // Warn in console so users can improve discoverability next time
+            try { console.warn(`[mcp] short_descriptions missing for server '${name}' in subagent_config.json. Consider adding a concise hint (e.g., \"${name}(one‑line purpose)\").`); } catch {}
+            parts.push(String(name));
+          }
+        }
+        if (parts.length) mcpToolsHint = ` MCP tools (listed as tool_name (short description)): ${parts.join(', ')}. Provide 'tool' as "all" or a subset of the above.`;
+      } catch {}
+    }
+
     const result = { tools: [
       {
         name: 'list_projects',
@@ -516,7 +539,7 @@ function buildMcpServer(userId) {
       },
       {
         name: 'scratchpad_subagent',
-        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: name (project), scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"). ${toolsSentence} The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
+        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: name (project), scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"). ${toolsSentence}${mcpToolsHint} The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
         inputSchema: {
           type: 'object',
           properties: {

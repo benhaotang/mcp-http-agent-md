@@ -122,6 +122,17 @@ async function run() {
       console.warn('[subagent] Run not completed yet (status=', finalStatus, '). Skipping scratchpad content assertions.');
     }
 
+    // Additional check: when using MCP provider, requesting a non-existent server should fail immediately
+    const apiType = String(process.env.AI_API_TYPE || '').toLowerCase();
+    if (apiType === 'mcp') {
+      const missingArgs = { name: proj, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'test', tool: ['__nonexistent_server__'] };
+      const missingRes = await client.callTool({ name: 'scratchpad_subagent', arguments: missingArgs });
+      const missing = JSON.parse(missingRes.content?.[0]?.text || '{}');
+      assert(missing?.status === 'failure', 'Expected failure status for missing MCP server selection');
+      assert(String(missing?.error || '').includes('mcp_requested_servers_not_found'), 'Expected mcp_requested_servers_not_found error');
+      console.log('[subagent] Missing MCP server selection correctly failed.');
+    }
+
     console.log('[subagent] Subagent tests passed.');
   } catch (err) {
     console.error('[subagent] Test failure:', err);

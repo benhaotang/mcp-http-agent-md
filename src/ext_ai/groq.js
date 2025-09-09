@@ -38,13 +38,15 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
     // executed_tools and search_results are available on the message; surface minimal info
     const urls = [];
     const toolOut = (choice?.message?.executed_tools || []);
+    const toolcall_history = [];
     for (const t of toolOut) {
+      toolcall_history.push({ type: 'call', toolName: String(t?.type || 'unknown'), toolCallId: t?.id || undefined, input: t?.input || undefined });
       const sr = t?.search_results?.results || [];
       for (const r of sr) {
         if (r?.url) urls.push(String(r.url));
       }
     }
-    return { text, codeSnippets: [], codeResults: [], urls };
+    return { text, codeSnippets: [], codeResults: [], urls, toolcall_history };
   } catch (err) {
     clearTimeout(hardTimer);
     console.error(err);

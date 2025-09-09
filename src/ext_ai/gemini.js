@@ -56,7 +56,7 @@ export async function infer({ apiKey, model, systemPrompt, userPrompt, tools = [
       }
     }
     clearTimeout(hardTimer);
-    return { text, codeSnippets, codeResults, urls: Array.from(urls) };
+    return { text, codeSnippets, codeResults, urls: Array.from(urls), toolcall_history: [] };
   } catch (err) {
     clearTimeout(hardTimer);
     console.error(err);

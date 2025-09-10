@@ -307,17 +307,8 @@ function parseJsonArrayOfStrings(s) {
   try {
     const v = JSON.parse(String(s || '[]'));
     if (Array.isArray(v)) return v.map(x => String(x)).filter(Boolean);
-  } catch {}
+  } catch (err) {console.error(err);}
   return [];
-}
-
-function uniqueStrings(list) {
-  const seen = new Set();
-  const out = [];
-  for (const v of list) {
-    if (!seen.has(v)) { seen.add(v); out.push(v); }
-  }
-  return out;
 }
 
 export async function getProjectById(projectId) {

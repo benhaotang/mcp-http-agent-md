@@ -71,14 +71,14 @@ Expose these tools via MCP CallTool (Streamable HTTP). All tools operate by proj
 - `delete_project`: Delete a project `{ project_id }` (owner only).
 - `rename_project`: Rename a project `{ project_id, newName, comment? }` (owner only).
 - `read_agent`: Read AGENTS.md `{ project_id, lineNumbers? }` (RO/RW/owner).
-- `write_agent`: Write AGENTS.md `{ project_id, mode=full|patch|diff, content|patch, comment? }` (RW/owner). Patch/diff requires a unified diff. On success, responses include the updated `hash`. If the editor is a shared RW participant, the commit message is prefixed with `Modified by <user> - ...`.
+- `write_agent`: Write AGENTS.md `{ project_id, mode=full|patch|diff, content|patch, comment? }` (RW/owner). Patch/diff requires a unified diff. On success, responses include the updated `hash`.
 - `read_progress`: Read structured tasks `{ project_id, only? }` → `{ tasks, markdown }`. `only` filters by `pending | in_progress | completed | archived` (synonyms accepted). Archived tasks are excluded unless explicitly requested.
 - `progress_add`: Add structured tasks `{ project_id, item, comment? }`. Duplicate `task_id` are skipped in `skipped`. Creates a new commit; response includes `hash` when items were added.
 - `progress_set_new_state`: Update tasks `{ project_id, match, state?, task_info?, parent_id?, extra_note?, comment? }`. Completing or archiving cascades to descendants. Lock rules apply (cannot edit locked items unless unlocking).
 - `generate_task_ids`: Generate N unique 8‑char IDs `{ count? }`.
 - `get_agents_md_best_practices_and_examples`: Best‑practices + examples from `example_agent_md.json`.
-- `list_project_logs`: List commit logs `{ project_id }` → `{ logs: [{ hash, message, created_at }] }`.
-- `revert_project`: Revert a project `{ project_id, hash }`. On success, response includes `{ project_id, hash }`.
+- `list_project_logs`: List commit logs `{ project_id }` → `{ logs: [{ hash, message, modified_by, created_at }] }`. The `modified_by` field shows the username of who made each commit.
+- `revert_project`: Revert a project `{ project_id, hash }`. Participants can only revert to commits in their most recent consecutive sequence from the end (to prevent discarding others' work). On success, response includes `{ project_id, hash }`.
 
 Scratchpad (ephemeral) tools:
 - `scratchpad_initialize`: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
@@ -175,8 +175,9 @@ Permissions and Effects:
   - In REST listing, the project `name` includes `" (Read-Only)"` as a suffix for clarity.
 - Read-write (RW):
   - Can read and write via MCP tools.
-  - All backups remain under the owner’s user_id.
-  - Commit messages for RW edits are prefixed with `"Modified by <userName|userId> - "` for clear attribution.
+  - All backups remain under the owner's user_id.
+  - Cannot rename projects (owner only).
+  - Can only revert to commits in their most recent consecutive sequence from the end.
 
 MCP + IDs (important):
 - All MCP tools use `project_id` (except `init_project`, which creates by `name` and returns `id`).

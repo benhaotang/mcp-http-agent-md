@@ -133,8 +133,76 @@ async function run() {
     await client2.callTool({ name: 'write_agent', arguments: { project_id: projectId, content: '# agent\nRW edit' } });
     const logsRes = await client2.callTool({ name: 'list_project_logs', arguments: { project_id: projectId } });
     const logsJson = JSON.parse(logsRes.content?.[0]?.text || '{}');
-    const lastMsg = (logsJson.logs || []).slice(-1)[0]?.message || '';
-    assert(/Modified by/i.test(lastMsg), 'Commit message should include Modified by for RW edits');
+    // Commit messages no longer have "Modified by" prefix since we have the modified_by field for blame
+
+    // Test modified_by field in list_project_logs
+    const logs = logsJson.logs || [];
+    const lastLog = logs[logs.length - 1];
+    assert(lastLog.modified_by === u2.name, 'Last commit should have modified_by set to u2 name');
+    const firstLog = logs[0];
+    assert(firstLog.modified_by === u1.name, 'First commit (init) should have modified_by set to u1 name');
+
+    // Test project rename restriction for shared projects
+    const renameAttempt = await client2.callTool({ name: 'rename_project', arguments: { project_id: projectId, newName: 'NewName' } });
+    const renameJson = JSON.parse(renameAttempt.content?.[0]?.text || '{}');
+    assert(renameJson.error === 'forbidden', 'RW participant should not be able to rename project');
+    
+    // Test project delete restriction for shared projects
+    const deleteAttempt = await client2.callTool({ name: 'delete_project', arguments: { project_id: projectId } });
+    const deleteJson = JSON.parse(deleteAttempt.content?.[0]?.text || '{}');
+    assert(deleteJson.error === 'forbidden', 'RW participant should not be able to delete project');
+    
+    // Owner should be able to rename
+    const ownerRename = await client1.callTool({ name: 'rename_project', arguments: { project_id: projectId, newName: 'OwnerRenamed' } });
+    const ownerRenameJson = JSON.parse(ownerRename.content?.[0]?.text || '{}');
+    assert(ownerRenameJson.hash, 'Owner should be able to rename project and get hash back');
+
+    // Test revert restriction to consecutive user commits
+    // First, make u1 make a commit after u2's commit
+    await client1.callTool({ name: 'write_agent', arguments: { project_id: projectId, content: '# agent\nU1 commit after U2', comment: 'U1 after U2' } });
+    
+    // Get current logs to find commit hashes
+    const newLogsRes = await client1.callTool({ name: 'list_project_logs', arguments: { project_id: projectId } });
+    const newLogsJson = JSON.parse(newLogsRes.content?.[0]?.text || '{}');
+    const newLogs = newLogsJson.logs || [];
+    
+    // Find commits by user
+    const u1Commits = newLogs.filter(log => log.modified_by === u1.name);
+    const u2Commits = newLogs.filter(log => log.modified_by === u2.name);
+    
+    assert(u1Commits.length >= 2, 'Should have at least 2 commits by u1');
+    assert(u2Commits.length >= 1, 'Should have at least 1 commit by u2');
+    
+    // u2 should NOT be able to revert to their own commit since there are u1 commits after it
+    // which would be discarded in a linear history
+    const u2LatestHash = u2Commits[u2Commits.length - 1].hash;
+    const revertToU2Latest = await client2.callTool({ name: 'revert_project', arguments: { project_id: projectId, hash: u2LatestHash } });
+    const revertToU2LatestJson = JSON.parse(revertToU2Latest.content?.[0]?.text || '{}');
+    assert(revertToU2LatestJson.error, 'u2 should NOT be able to revert to their commit when it would discard others work');
+    
+    // u1 should be able to revert to their most recent commit (which is the latest overall)
+    const u1LatestHash = u1Commits[u1Commits.length - 1].hash;
+    const revertToU1Latest = await client1.callTool({ name: 'revert_project', arguments: { project_id: projectId, hash: u1LatestHash } });
+    const revertToU1LatestJson = JSON.parse(revertToU1Latest.content?.[0]?.text || '{}');
+    assert(revertToU1LatestJson.hash === u1LatestHash, 'u1 should be able to revert to their latest commit');
+    
+    // But u2 should NOT be able to revert to u1's init commit (if there's a u2 commit in between)
+    if (u1Commits.length > 1 && u2Commits.length > 0) {
+      const u1InitHash = u1Commits[0].hash; // First commit by u1
+      const revertToU1Init = await client2.callTool({ name: 'revert_project', arguments: { project_id: projectId, hash: u1InitHash } });
+      const revertToU1InitJson = JSON.parse(revertToU1Init.content?.[0]?.text || '{}');
+      assert(revertToU1InitJson.error || revertToU1InitJson.message, 'u2 should not be able to revert to old u1 commit');
+    }
+
+    // Test read-only participant cannot revert
+    // First, downgrade u2 to read-only
+    const sro2 = await shareProject({ 'Authorization': `Bearer ${MAIN}` }, projectId, u2.id, 'ro');
+    assert(sro2.status === 200 && sro2.json.permission === 'ro', 'Downgrade to RO');
+    
+    // u2 (now RO) should not be able to revert to any commit
+    const roRevertAttempt = await client2.callTool({ name: 'revert_project', arguments: { project_id: projectId, hash: u1LatestHash } });
+    const roRevertJson = JSON.parse(roRevertAttempt.content?.[0]?.text || '{}');
+    assert(roRevertJson.error === 'read_only_project', 'RO participant should not be able to revert project');
 
     console.log('MCP share tests passed');
   } catch (err) {

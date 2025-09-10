@@ -860,17 +860,35 @@ function buildMcpServer(userId, userName) {
       }
       case 'delete_project': {
         const { project_id } = args || {};
-        await ops.removeProject(String(project_id || ''));
-        return okText('deleted');
+        try {
+          const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
+          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (acc.permission !== 'owner') return okText(JSON.stringify({ error: 'forbidden', message: 'Only the project owner can delete the project' }));
+          await ops.removeProject(String(project_id || ''));
+          return okText('deleted');
+        } catch (err) {
+          const msg = String(err?.message || err || 'delete failed');
+          const code = /project not found/i.test(msg) ? 'project_not_found' : 'delete_failed';
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
       }
       case 'rename_project': {
         const { project_id, newName, comment } = args || {};
-        const result = await ops.renameProject(String(project_id || ''), String(newName || ''));
         try {
-          const hash = await vcCommitProject(userId, String(project_id || ''), { action: 'rename_project', comment });
-          return okText(JSON.stringify({ ...result, hash }));
-        } catch {
-          return okText(JSON.stringify(result));
+          const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
+          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (acc.permission !== 'owner') return okText(JSON.stringify({ error: 'forbidden', message: 'Only the project owner can rename the project' }));
+          const result = await ops.renameProject(String(project_id || ''), String(newName || ''));
+          try {
+            const hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'rename_project', comment, modifiedBy: userId });
+            return okText(JSON.stringify({ ...result, hash }));
+          } catch {
+            return okText(JSON.stringify(result));
+          }
+        } catch (err) {
+          const msg = String(err?.message || err || 'rename failed');
+          const code = /project not found/i.test(msg) ? 'project_not_found' : 'rename_failed';
+          return okText(JSON.stringify({ error: code, message: msg }));
         }
       }
       case 'read_agent': {
@@ -902,7 +920,7 @@ function buildMcpServer(userId, userName) {
             if (typeof content !== 'string') throw new Error('content (string) required for full mode');
             await dbWriteDoc(acc.owner_id, acc.project_id, 'agent', content);
             let hash = null;
-            try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'write_agent', comment, modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : undefined }); } catch {}
+            try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'write_agent', comment, modifiedBy: userId }); } catch {}
             return okText(JSON.stringify({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8'), hash }));
           }
           if (editMode === 'patch' || editMode === 'diff') {
@@ -911,7 +929,7 @@ function buildMcpServer(userId, userName) {
             const updated = applyUnifiedDiff(current, patch);
             await dbWriteDoc(acc.owner_id, acc.project_id, 'agent', updated);
             let hash = null;
-            try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'write_agent', comment, modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : undefined }); } catch {}
+            try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'write_agent', comment, modifiedBy: userId }); } catch {}
             return okText(JSON.stringify({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8'), hash }));
           }
           throw new Error(`Unknown mode: ${mode}`);
@@ -1116,7 +1134,7 @@ function buildMcpServer(userId, userName) {
           const res = await dbAddTasks(acc.owner_id, acc.project_id, tasks);
           let hash = null;
           if ((res.added?.length || 0) > 0) {
-            try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'progress_add', comment, modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : undefined }); } catch {}
+            try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'progress_add', comment, modifiedBy: userId }); } catch {}
           }
           return okText(JSON.stringify({ added: res.added, skipped: res.exists, invalid, hash }));
         } catch (err) {
@@ -1160,7 +1178,7 @@ function buildMcpServer(userId, userName) {
             return okText(JSON.stringify({ changed: [], state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, notice: 'No items changed. Items may be locked or list changed. Pull updated list?', suggest: 'read_progress' }));
           }
           let hash = null;
-          try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'progress_set_new_state', comment, modifiedBy: (acc.permission !== 'owner') ? (userName || userId) : undefined }); } catch {}
+          try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'progress_set_new_state', comment, modifiedBy: userId }); } catch {}
           return okText(JSON.stringify({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, hash }));
         } catch (err) {
           const msg = String(err?.message || err || 'set_state failed');
@@ -1210,7 +1228,7 @@ function buildMcpServer(userId, userName) {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
           if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
           if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
-          const res = await vcRevertProject(acc.owner_id, acc.project_id, String(hash || ''));
+          const res = await vcRevertProject(acc.owner_id, acc.project_id, String(hash || ''), userId);
           return okText(JSON.stringify({ project_id: acc.project_id, hash: res.hash }));
         } catch (err) {
           const msg = String(err?.message || err || 'revert failed');

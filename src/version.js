@@ -12,10 +12,7 @@ export async function onInitProject(userId, projectId) {
 
 export async function commitProject(userId, projectId, { comment, action, modifiedBy } = {}) {
   let message = String(comment || '').trim() || defaultMessage(action || 'commit');
-  if (modifiedBy && String(modifiedBy).trim()) {
-    message = `Modified by ${String(modifiedBy).trim()} - ` + message;
-  }
-  const hash = await createProjectBackup(userId, projectId, message);
+  const hash = await createProjectBackup(userId, projectId, message, modifiedBy);
   return hash;
 }
 
@@ -23,6 +20,6 @@ export async function listProjectLogs(userId, projectId) {
   return await dbListLogs(userId, projectId);
 }
 
-export async function revertProject(userId, projectId, hash) {
-  return await revertProjectToHash(userId, projectId, hash);
+export async function revertProject(userId, projectId, hash, currentUserId) {
+  return await revertProjectToHash(userId, projectId, hash, currentUserId);
 }

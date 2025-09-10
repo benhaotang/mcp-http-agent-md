@@ -93,6 +93,7 @@ async function openDb() {
       hash TEXT NOT NULL,
       message TEXT NOT NULL,
       snapshot_json TEXT NOT NULL,
+      modified_by TEXT, -- user_id of the person who made this change
       created_at TEXT NOT NULL,
       UNIQUE(user_id, project_id, hash),
       FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
@@ -157,6 +158,18 @@ async function openDb() {
         db.exec("ALTER TABLE user_projects ADD COLUMN rw_users_json TEXT");
       } catch (err) {
         console.error("Failed to add 'rw_users_json' column to user_projects:", err);
+      }
+    }
+  } catch {}
+  // Add modified_by column to backups table if missing
+  try {
+    const backupsRs = db.exec("PRAGMA table_info('backups')");
+    const backupsCols = new Set((backupsRs && backupsRs[0] && backupsRs[0].values ? backupsRs[0].values : []).map(r => String(r[1])));
+    if (!backupsCols.has('modified_by')) {
+      try {
+        db.exec("ALTER TABLE backups ADD COLUMN modified_by TEXT");
+      } catch (err) {
+        console.error("Failed to add 'modified_by' column to backups:", err);
       }
     }
   } catch {}
@@ -614,8 +627,8 @@ export async function ensureProjectVersionInitialized(userId, projectId) {
   const now = new Date().toISOString();
   const snapshot = await buildProjectSnapshot(db, { userId, projectRow: proj });
   const hash = computeHashForSnapshot(snapshot);
-  const ins = db.prepare('INSERT INTO backups (id, user_id, project_id, hash, message, snapshot_json, created_at) VALUES ($id, $u, $p, $h, $m, $s, $c)');
-  ins.bind({ $id: newUserId(), $u: userId, $p: proj.id, $h: hash, $m: 'init', $s: JSON.stringify(snapshot), $c: now });
+  const ins = db.prepare('INSERT INTO backups (id, user_id, project_id, hash, message, snapshot_json, modified_by, created_at) VALUES ($id, $u, $p, $h, $m, $s, $mb, $c)');
+  ins.bind({ $id: newUserId(), $u: userId, $p: proj.id, $h: hash, $m: 'init', $s: JSON.stringify(snapshot), $mb: userId, $c: now });
   ins.step();
   ins.free();
   const history = [hash];
@@ -627,7 +640,7 @@ export async function ensureProjectVersionInitialized(userId, projectId) {
   return hash;
 }
 
-export async function createProjectBackup(userId, projectId, message) {
+export async function createProjectBackup(userId, projectId, message, modifiedBy) {
   const db = await openDb();
   // Ensure exists and initialized
   const proj0 = await getProjectFullById(userId, projectId);
@@ -637,8 +650,8 @@ export async function createProjectBackup(userId, projectId, message) {
   const now = new Date().toISOString();
   const snapshot = await buildProjectSnapshot(db, { userId, projectRow: proj });
   const hash = computeHashForSnapshot(snapshot);
-  const ins = db.prepare('INSERT INTO backups (id, user_id, project_id, hash, message, snapshot_json, created_at) VALUES ($id, $u, $p, $h, $m, $s, $c)');
-  ins.bind({ $id: newUserId(), $u: userId, $p: proj.id, $h: hash, $m: (String(message || '').trim() || `${new Date().toISOString()} auto`), $s: JSON.stringify(snapshot), $c: now });
+  const ins = db.prepare('INSERT INTO backups (id, user_id, project_id, hash, message, snapshot_json, modified_by, created_at) VALUES ($id, $u, $p, $h, $m, $s, $mb, $c)');
+  ins.bind({ $id: newUserId(), $u: userId, $p: proj.id, $h: hash, $m: (String(message || '').trim() || `${new Date().toISOString()} auto`), $s: JSON.stringify(snapshot), $mb: modifiedBy || userId, $c: now });
   ins.step();
   ins.free();
   let history = [];
@@ -660,27 +673,110 @@ export async function listProjectLogs(userId, projectId) {
   const cur = await getProjectFullById(userId, projectId);
   let history = [];
   try { history = JSON.parse(cur.hash_history || '[]'); if (!Array.isArray(history)) history = []; } catch { history = []; }
+  
+  // Get all backups with their modified_by user IDs
   const all = new Map();
-  const sel = db.prepare('SELECT hash, message, created_at FROM backups WHERE user_id = $u AND project_id = $p');
+  const sel = db.prepare('SELECT hash, message, modified_by, created_at FROM backups WHERE user_id = $u AND project_id = $p');
   sel.bind({ $u: userId, $p: cur.id });
   while (sel.step()) {
     const r = sel.getAsObject();
-    all.set(String(r.hash), { hash: String(r.hash), message: String(r.message || ''), created_at: r.created_at });
+    all.set(String(r.hash), { hash: String(r.hash), message: String(r.message || ''), modified_by_id: r.modified_by || null, created_at: r.created_at });
   }
   sel.free();
-  return history.map(h => all.get(String(h))).filter(Boolean);
+  
+  // Get all unique user IDs that modified this project
+  const userIds = new Set();
+  for (const [, backup] of all) {
+    if (backup.modified_by_id) userIds.add(backup.modified_by_id);
+  }
+  
+  // Get usernames for all these user IDs
+  const userNames = new Map();
+  if (userIds.size > 0) {
+    const userSel = db.prepare(`SELECT id, name FROM users WHERE id IN (${Array.from(userIds).map(() => '?').join(',')})`);
+    userSel.bind(Array.from(userIds));
+    while (userSel.step()) {
+      const u = userSel.getAsObject();
+      userNames.set(u.id, u.name || u.id);
+    }
+    userSel.free();
+  }
+  
+  // Map the logs with usernames
+  const logs = history.map(h => {
+    const backup = all.get(String(h));
+    if (!backup) return null;
+    return {
+      hash: backup.hash,
+      message: backup.message,
+      modified_by: backup.modified_by_id ? (userNames.get(backup.modified_by_id) || backup.modified_by_id) : null,
+      created_at: backup.created_at
+    };
+  }).filter(Boolean);
+  
+  return logs;
 }
 
-export async function revertProjectToHash(userId, projectId, targetHash) {
+export async function revertProjectToHash(userId, projectId, targetHash, currentUserId) {
   const db = await openDb();
   const proj = await getProjectFullById(userId, projectId);
   if (!proj) throw new Error('project not found');
-  const sel = db.prepare('SELECT snapshot_json FROM backups WHERE user_id = $u AND project_id = $p AND hash = $h');
-  sel.bind({ $u: userId, $p: proj.id, $h: targetHash });
-  const ok = sel.step();
-  if (!ok) { sel.free(); throw new Error('hash_not_found'); }
-  const row = sel.getAsObject();
-  sel.free();
+  
+  // Get the project's commit history in order
+  let history = [];
+  try { history = JSON.parse(proj.hash_history || '[]'); if (!Array.isArray(history)) history = []; } catch { history = []; }
+  
+  // Find the target hash position in history
+  const targetIndex = history.indexOf(targetHash);
+  if (targetIndex === -1) throw new Error('hash_not_found');
+  
+  // If user is the owner, they can revert to any commit
+  if (currentUserId && userId === currentUserId) {
+    // Owner can revert to any commit, proceed with revert
+  } else if (currentUserId && userId !== currentUserId) {
+    // For non-owners, check if they can revert to this hash
+    // They can only revert to commits that are part of their most recent consecutive sequence
+    
+    // Get all backup info for this project to check modified_by
+    const allBackups = new Map();
+    const backupSel = db.prepare('SELECT hash, modified_by FROM backups WHERE user_id = $u AND project_id = $p');
+    backupSel.bind({ $u: userId, $p: proj.id });
+    while (backupSel.step()) {
+      const r = backupSel.getAsObject();
+      allBackups.set(String(r.hash), r.modified_by || userId);
+    }
+    backupSel.free();
+    
+    // Find the most recent consecutive sequence of commits by currentUserId from the end
+    // Users can only revert to commits in their most recent consecutive sequence
+    // because reverting discards all commits after the target commit
+    let earliestAllowedIndex = history.length; // Default: no commits allowed
+    for (let i = history.length - 1; i >= 0; i--) {
+      const hash = history[i];
+      const modifiedBy = allBackups.get(hash) || userId;
+      if (modifiedBy === currentUserId) {
+        // This is the user's commit, update the earliest allowed index
+        earliestAllowedIndex = i;
+      } else {
+        // Found a commit by someone else, stop here
+        // User cannot revert past this point as it would discard others' work
+        break;
+      }
+    }
+    
+    // Check if target hash is within the allowed range
+    if (targetIndex < earliestAllowedIndex) {
+      throw new Error('You can only revert to your most recent consecutive commits');
+    }
+  }
+  
+  // Get the snapshot for the target hash
+  const snapSel = db.prepare('SELECT snapshot_json FROM backups WHERE user_id = $u AND project_id = $p AND hash = $h');
+  snapSel.bind({ $u: userId, $p: proj.id, $h: targetHash });
+  const ok = snapSel.step();
+  if (!ok) { snapSel.free(); throw new Error('hash_not_found'); }
+  const row = snapSel.getAsObject();
+  snapSel.free();
   let snapshot;
   try { snapshot = JSON.parse(row.snapshot_json || '{}'); } catch { throw new Error('invalid_snapshot'); }
   const now = new Date().toISOString();
@@ -714,10 +810,10 @@ export async function revertProjectToHash(userId, projectId, targetHash) {
   }
   ins.free();
   // Trim hash_history to target
-  let history = [];
-  try { history = JSON.parse(proj.hash_history || '[]'); if (!Array.isArray(history)) history = []; } catch { history = []; }
-  const idx = history.indexOf(targetHash);
-  const newHist = idx >= 0 ? history.slice(0, idx + 1) : [targetHash];
+  let newHistory = [];
+  try { newHistory = JSON.parse(proj.hash_history || '[]'); if (!Array.isArray(newHistory)) newHistory = []; } catch { newHistory = []; }
+  const idx = newHistory.indexOf(targetHash);
+  const newHist = idx >= 0 ? newHistory.slice(0, idx + 1) : [targetHash];
   const updHist = db.prepare('UPDATE user_projects SET hash_history = $hh, updated_at = $now WHERE id = $pid');
   updHist.bind({ $hh: JSON.stringify(newHist), $now: now, $pid: proj.id });
   updHist.step();

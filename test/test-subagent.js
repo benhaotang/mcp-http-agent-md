@@ -3,7 +3,7 @@ import process from 'node:process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-const PORT = process.env.TEST_SUBAGENT_PORT ? Number(process.env.TEST_SUBAGENT_PORT) : 43112;
+const PORT = process.env.TEST_SUBAGENT_PORT ? Number(process.env.TEST_SUBAGENT_PORT) : 43222;
 const BASE = `http://localhost:${PORT}/mcp`;
 
 async function waitForServer(proc, timeoutMs = 10000) {
@@ -88,14 +88,16 @@ async function run() {
     const initRes = await client.callTool({ name: 'init_project', arguments: { name: proj } });
     const initPayload = JSON.parse(initRes.content?.[0]?.text || '{}');
     assert(initPayload?.hash, 'init_project should return hash');
+    assert(initPayload?.id, 'init_project should return project id');
+    const projectId = initPayload.id;
 
     const tasks = [ { task_id: 'work', task_info: 'Simple subagent task', status: 'open' } ];
-    const spInitRes = await client.callTool({ name: 'scratchpad_initialize', arguments: { name: proj, tasks } });
+    const spInitRes = await client.callTool({ name: 'scratchpad_initialize', arguments: { project_id: projectId, tasks } });
     const spInit = JSON.parse(spInitRes.content?.[0]?.text || '{}');
     assert(spInit?.scratchpad_id, 'scratchpad_initialize should return scratchpad_id');
 
     // Run subagent
-    const saArgs = { name: proj, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'Reply with a short confirmation.', tool: 'all' };
+    const saArgs = { project_id: projectId, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'Reply with a short confirmation.', tool: 'all' };
     const runRes = await client.callTool({ name: 'scratchpad_subagent', arguments: saArgs });
     const run = JSON.parse(runRes.content?.[0]?.text || '{}');
     assert(typeof run.run_id === 'string' && run.run_id.length > 0, 'run_id must be returned');
@@ -104,7 +106,7 @@ async function run() {
     // If not done, poll status once (the server polls internally up to ~25s)
     let finalStatus = run.status;
     if (finalStatus === 'in_progress') {
-      const statusRes = await client.callTool({ name: 'scratchpad_subagent_status', arguments: { name: proj, run_id: run.run_id } });
+      const statusRes = await client.callTool({ name: 'scratchpad_subagent_status', arguments: { project_id: projectId, run_id: run.run_id } });
       const status = JSON.parse(statusRes.content?.[0]?.text || '{}');
       assert(status?.run_id === run.run_id, 'status run_id mismatch');
       assert(['success','failure','in_progress'].includes(status.status), 'invalid status from status tool');
@@ -113,7 +115,7 @@ async function run() {
 
     // If finished successfully, verify scratchpad content was appended
     if (finalStatus === 'success') {
-      const reviewRes = await client.callTool({ name: 'review_scratchpad', arguments: { name: proj, scratchpad_id: spInit.scratchpad_id } });
+      const reviewRes = await client.callTool({ name: 'review_scratchpad', arguments: { project_id: projectId, scratchpad_id: spInit.scratchpad_id } });
       const review = JSON.parse(reviewRes.content?.[0]?.text || '{}');
       const work = (review.tasks || []).find(t => String(t.task_id) === 'work');
       assert(work, 'work task should exist');
@@ -125,7 +127,7 @@ async function run() {
     // Additional check: when using MCP provider, requesting a non-existent server should fail immediately
     const apiType = String(process.env.AI_API_TYPE || '').toLowerCase();
     if (apiType === 'mcp') {
-      const missingArgs = { name: proj, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'test', tool: ['__nonexistent_server__'] };
+      const missingArgs = { project_id: projectId, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'test', tool: ['__nonexistent_server__'] };
       const missingRes = await client.callTool({ name: 'scratchpad_subagent', arguments: missingArgs });
       const missing = JSON.parse(missingRes.content?.[0]?.text || '{}');
       assert(missing?.status === 'failure', 'Expected failure status for missing MCP server selection');

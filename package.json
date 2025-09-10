@@ -18,6 +18,8 @@
     "dev": "nodemon --watch index.js --ext js,mjs,cjs index.js",
     "start": "node index.js",
     "test": "node test/test.js",
+    "test:share": "node test/test-share.js",
+    "test:mcp-share": "node test/test-mcp-share.js",
     "test:subagent": "node test/test-subagent.js",
     "test:mcp": "node test/mcp.js"
   },

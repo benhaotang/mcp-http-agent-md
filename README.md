@@ -203,6 +203,24 @@ Base: `/auth` (Bearer `MAIN_API_KEY`)
 - POST `/auth/users/:id/regenerate`: Rotate API key
 - DELETE `/auth/users/:id`: Delete user
 
+## Project Sharing
+
+Share projects with other users via REST API. Base: `/project` (Bearer token auth)
+
+Share a project read-only with another user:
+```
+curl -X POST http://localhost:3000/project/share \
+  -H "Authorization: Bearer $USER_API_KEY/$MAIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"project_id":"<project_id>","target_user_id":"<user_id>","permission":"ro"}'
+```
+
+### Definition
+
+- GET `/project/list`: List projects (admin: all projects, user: owned + shared)
+- POST `/project/share`: Share project `{ project_id, target_user_id, permission, revoke? }`. Permission: `ro` (read-only) or `rw` (read-write). Set `revoke: true` to remove access.
+- GET `/project/status?project_id=...`: Get project sharing status
+
 ## MCP Endpoint
 
 - Base path: `POST /mcp` (Streamable HTTP, stateless JSON-RPC)
@@ -218,8 +236,8 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
 
 - list_projects: List all project names.
 - init_project: Create/init project `{ name, agent?, progress? }`. Immediately creates an initial backup (commit) and returns `hash`.
-- delete_project: Delete project `{ name }`.
-- rename_project: Rename project `{ oldName, newName, comment? }`. Returns updated `hash`.
+- delete_project: Delete project `{ name }`. (owner only)
+- rename_project: Rename project `{ oldName, newName, comment? }` (owner only). Returns updated `hash`.
 - read_agent: Read `AGENTS.md` `{ name }`.
 - write_agent: Write `AGENTS.md` `{ name, content, comment? }`. Patch/diff also supported; responses include updated `hash`.
 - read_progress: Read structured tasks for a project `{ name, only? }`. Returns JSON `{ tasks: [...], markdown: "..." }` where `markdown` is a nested, human-friendly outline. `only` filters by `pending | in_progress | completed | archived` (synonyms accepted). By default, archived tasks are excluded; they are included only if `only` contains `archived`.
@@ -228,8 +246,8 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
   - Lock rules: When a task (or any ancestor) is `completed` or `archived`, no edits are allowed to that task or its descendants, except unlocking the task itself to `pending` or `in_progress` (and only if none of its ancestors are locked). Unlocking a parent propagates to its descendants.
 - generate_task_ids: Generate N unique 8-character IDs not used by this user `{ count? }` (default 5). Returns `{ ids: ["abcd1234", ...] }`.
 - get_agents_md_best_practices_and_examples: Returns best practices and examples from `example_agent_md.json`. Default returns only `the_art_of_writing_agents_md` (best-practices). Use `include='all'` to include all examples, or set `include` to a string/array to filter by usecase/title.
-- list_project_logs: List commit logs `{ name }` → `{ logs: [{ hash, message, created_at }] }`.
-- revert_project: Revert to an earlier `hash` `{ name, hash }`; trims history to that point (no branches).
+- list_project_logs: List commit logs `{ name }` → `{ logs: [{ hash, message, modified_by, created_at }] }`. The `modified_by` field shows who made each commit.
+- revert_project: Revert to an earlier `hash` `{ name, hash }`. Shared participants can only revert to commits in their most recent consecutive sequence (to prevent discarding others' work). Trims history to that point (no branches).
 
 Scratchpad (ephemeral, per-session) tools:
 - scratchpad_initialize: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. `tasks` is up to 6 items `{ task_id, status: 'open'|'complete', task_info, scratchpad?, comments? }`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.

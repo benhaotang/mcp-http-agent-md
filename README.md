@@ -3,7 +3,7 @@
 ![](https://badge.mcpx.dev?type=server&features=tools 'MCP server with features')
 ![](https://badge.mcpx.dev?type=client&features=tools 'MCP client with features')
 
-Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (via Gemini, OpenAI, Groq, OpenAI‑compatible, or MCP + OpenAI‑compatible) for solving focused tasks. An auth midware is also provided for user isolation and serving publicly.
+Minimal MCP (Model Context Protocol) HTTP server for AGENTS.md and structured tasks, with versioned history (logs/revert) and an ephemeral scratchpad, exposed over a Streamable HTTP endpoint. The scratchpad can also be used to spawn context isolated subagents (via Gemini, OpenAI, Groq, OpenAI‑compatible, or MCP + OpenAI‑compatible) for solving focused tasks. An auth midware is also provided for user isolation and public serving. Users can also share and collaborate on projects within the server.
 
 Co-authored by Codex (OpenAI).
 

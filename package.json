@@ -1,6 +1,6 @@
 {
   "name": "mcp-http-agent-md",
-  "version": "0.0.5",
+  "version": "0.1.0",
   "description": "a mcp server for storing and updating agent.md and progress.md with a temporary scratchpad system",
   "homepage": "https://github.com/benhaotang/mcp-http-agent-md#readme",
   "bugs": {

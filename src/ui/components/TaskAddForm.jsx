@@ -37,8 +37,8 @@ export default function TaskAddForm({ projectId, onAdded, readOnly }) {
 
   return (
     <form onSubmit={submit} style={{display:'flex',gap:'0.5rem',marginBottom:'0.75rem'}}>
-      <input value={text} onChange={e=>setText(e.target.value)} placeholder="New task description" style={{flex:1,padding:'0.5rem',borderRadius:4,border:'1px solid #30363d',background:'#0d1117',color:'#c9d1d9'}} />
-      <button disabled={adding || readOnly} style={{background:'#1f6feb',color:'#fff',border:'1px solid #2f81f7',padding:'0.5rem 0.9rem',borderRadius:4,fontWeight:600,cursor: readOnly? 'not-allowed':'pointer'}}>Add</button>
+      <input value={text} onChange={e=>setText(e.target.value)} placeholder="New task description" style={{flex:1,padding:'0.5rem',borderRadius:4,border:'1px solid var(--border)',background:'var(--panel-alt)',color:'var(--text)'}} />
+      <button disabled={adding || readOnly} style={{background:'var(--accent)',color:'#fff',border:'1px solid var(--accent-hover)',padding:'0.5rem 0.9rem',borderRadius:4,fontWeight:600,cursor: readOnly? 'not-allowed':'pointer'}}>Add</button>
     </form>
   );
 }

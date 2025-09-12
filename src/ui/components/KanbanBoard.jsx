@@ -207,7 +207,7 @@ export default function KanbanBoard({ projectId, readOnly }) {
             return (
               <Droppable droppableId={col.key} key={col.key}>
                 {(provided) => (
-                  <div ref={provided.innerRef} {...provided.droppableProps} style={{background:'#161b22',border:'1px solid #30363d',borderRadius:6,padding:'0.5rem',minHeight:300,display:'flex',flexDirection:'column'}}>
+                  <div ref={provided.innerRef} {...provided.droppableProps} style={{background:'var(--panel)',border:'1px solid var(--border)',borderRadius:6,padding:'0.5rem',minHeight:300,display:'flex',flexDirection:'column'}}>
                     <div style={{fontWeight:600,fontSize:'0.85rem',marginBottom:'0.4rem'}}>{col.title} ({totalCount})</div>
                     <div style={{display:'flex',flexDirection:'column',gap:'0.5rem'}}>
                       {hierarchical.map((entry, idx) => {
@@ -223,14 +223,14 @@ export default function KanbanBoard({ projectId, readOnly }) {
                         return (
                           <Draggable draggableId={t.task_id} index={idx} key={t.task_id} isDragDisabled={readOnly}>
                             {(p) => (
-                              <div ref={p.innerRef} {...p.draggableProps} {...p.dragHandleProps} style={{background:'#0d1117',border:'1px solid #30363d',borderRadius:6,padding:'0.45rem',paddingLeft: globalDepth ? (0.5 + globalDepth*0.75) + 'rem' : '0.5rem',...p.draggableProps.style}}>
+                              <div ref={p.innerRef} {...p.draggableProps} {...p.dragHandleProps} style={{background:'var(--panel-alt)',border:'1px solid var(--border)',borderRadius:6,padding:'0.45rem',paddingLeft: globalDepth ? (0.5 + globalDepth*0.75) + 'rem' : '0.5rem',...p.draggableProps.style}}>
                                 <div style={{display:'flex',alignItems:'center',gap:'0.4rem'}}>
                                   <span title={`Root: ${rootId}`} style={{display:'inline-block',width:8,height:8,borderRadius:'50%',background:color,flexShrink:0}} />
                                   {hasKids && (
                                     <button
                                       type="button"
                                       onClick={(e)=>{ e.stopPropagation(); setCollapsed(prev=>{ const n=new Set(prev); if(n.has(t.task_id)) { n.delete(t.task_id); setAncestorHidden(h => { const nh=new Set(h); nh.delete(t.task_id); return nh; }); } else { n.add(t.task_id); setAncestorHidden(h => { const nh=new Set(h); nh.add(t.task_id); return nh; }); } return n; }); }}
-                                      style={{background:'none',border:'none',color:'#8b949e',cursor:'pointer',padding:0,fontSize:'0.75rem',lineHeight:1}}>
+                                      style={{background:'none',border:'none',color:'var(--muted)',cursor:'pointer',padding:0,fontSize:'0.75rem',lineHeight:1}}>
                                       {isCollapsed ? '▸' : '▾'}
                                     </button>
                                   )}
@@ -242,10 +242,10 @@ export default function KanbanBoard({ projectId, readOnly }) {
                                     <div style={{fontSize:'0.85rem'}}>{t.task_info}</div>
                                   </div>
                                   {hiddenCount > 0 && (
-                                    <span style={{fontSize:'0.65rem',background:'#21262d',border:'1px solid #30363d',borderRadius:12,padding:'0 0.4rem'}}>{hiddenCount}</span>
+                                    <span style={{fontSize:'0.65rem',background:'var(--pill-bg)',border:'1px solid var(--pill-border)',borderRadius:12,padding:'0 0.4rem'}}>{hiddenCount}</span>
                                   )}
                                   {!readOnly && (
-                                    <button type="button" title="Edit properties" onClick={(e)=>{ e.stopPropagation(); setPropTask(t.task_id); }} style={{background:'none',border:'1px solid #30363d',color:'#8b949e',cursor:'pointer',padding:'0.15rem 0.35rem',fontSize:'0.65rem',borderRadius:4}}>⚙</button>
+                                    <button type="button" title="Edit properties" onClick={(e)=>{ e.stopPropagation(); setPropTask(t.task_id); }} style={{background:'var(--btn-muted-bg)',border:'1px solid var(--btn-muted-border)',color:'var(--text)',cursor:'pointer',padding:'0.15rem 0.35rem',fontSize:'0.65rem',borderRadius:4}}>⚙</button>
                                   )}
                                 </div>
                               </div>

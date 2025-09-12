@@ -78,26 +78,26 @@ export default function TaskPropertyModal({ open, onClose, taskId, allTasks, pro
 
   return (
     <div style={{position:'fixed',inset:0,zIndex:2000,display:'flex',alignItems:'flex-start',justifyContent:'center',paddingTop:'5vh',background:'rgba(0,0,0,0.5)'}} onMouseDown={(e)=>{ if (e.target === e.currentTarget) onClose?.(); }}>
-      <form onSubmit={save} style={{width:'420px',maxWidth:'90vw',background:'#0d1117',border:'1px solid #30363d',borderRadius:8,padding:'1rem',boxShadow:'0 4px 16px rgba(0,0,0,0.6)'}} onMouseDown={e=>e.stopPropagation()}>
+      <form onSubmit={save} style={{width:'420px',maxWidth:'90vw',background:'var(--panel-alt)',border:'1px solid var(--border)',borderRadius:8,padding:'1rem',boxShadow:'0 4px 16px rgba(0,0,0,0.6)'}} onMouseDown={e=>e.stopPropagation()}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'0.75rem'}}>
           <h4 style={{margin:0,fontSize:'0.95rem'}}>Edit Task</h4>
-          <button type="button" onClick={()=>onClose?.()} style={{background:'none',border:'none',color:'#8b949e',cursor:'pointer',fontSize:'0.9rem'}}>✕</button>
+          <button type="button" onClick={()=>onClose?.()} style={{background:'none',border:'none',color:'var(--muted)',cursor:'pointer',fontSize:'0.9rem'}}>✕</button>
         </div>
         <div style={{fontSize:'0.7rem',opacity:0.6,marginBottom:'0.5rem'}}>{task.task_id}</div>
         <label style={{display:'block',fontSize:'0.7rem',textTransform:'uppercase',letterSpacing:'.05em',marginBottom:4}}>Name</label>
-        <textarea value={name} onChange={e=>setName(e.target.value)} rows={3} disabled={readOnly} style={{width:'100%',background:'#161b22',color:'#c9d1d9',border:'1px solid #30363d',borderRadius:4,padding:'0.4rem',fontSize:'0.8rem',marginBottom:'0.75rem',resize:'vertical'}} />
+  <textarea value={name} onChange={e=>setName(e.target.value)} rows={3} disabled={readOnly} style={{width:'100%',background:'var(--panel)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:4,padding:'0.4rem',fontSize:'0.8rem',marginBottom:'0.75rem',resize:'vertical'}} />
 
         <label style={{display:'block',fontSize:'0.7rem',textTransform:'uppercase',letterSpacing:'.05em',marginBottom:4}}>Status</label>
-        <select value={status} onChange={e=>setStatus(e.target.value)} disabled={readOnly} style={{width:'100%',background:'#161b22',color:'#c9d1d9',border:'1px solid #30363d',borderRadius:4,padding:'0.35rem',fontSize:'0.8rem',marginBottom:'0.75rem'}}>
+  <select value={status} onChange={e=>setStatus(e.target.value)} disabled={readOnly} style={{width:'100%',background:'var(--panel)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:4,padding:'0.35rem',fontSize:'0.8rem',marginBottom:'0.75rem'}}>
           {STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
 
         <label style={{display:'block',fontSize:'0.7rem',textTransform:'uppercase',letterSpacing:'.05em',marginBottom:4}}>Parent</label>
-        <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="Search parent..." style={{width:'100%',background:'#161b22',color:'#c9d1d9',border:'1px solid #30363d',borderRadius:4,padding:'0.35rem',fontSize:'0.75rem',marginBottom:4}} />
-        <div style={{maxHeight:120,overflow:'auto',border:'1px solid #30363d',borderRadius:4,background:'#0d1117',marginBottom:'0.6rem'}}>
-          <div style={{padding:'0.35rem',fontSize:'0.7rem',cursor:'pointer',background:!parentId?'#1c2128':'transparent'}} onClick={()=>setParentId('')}>No parent (root)</div>
+        <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="Search parent..." style={{width:'100%',background:'var(--panel)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:4,padding:'0.35rem',fontSize:'0.75rem',marginBottom:4}} />
+        <div style={{maxHeight:120,overflow:'auto',border:'1px solid var(--border)',borderRadius:4,background:'var(--panel-alt)',marginBottom:'0.6rem'}}>
+          <div style={{padding:'0.35rem',fontSize:'0.7rem',cursor:'pointer',background:!parentId?'var(--pill-bg)':'transparent'}} onClick={()=>setParentId('')}>No parent (root)</div>
           {candidateParents.map(p => (
-            <div key={p.task_id} style={{padding:'0.35rem',fontSize:'0.7rem',cursor:'pointer',background: parentId===p.task_id ? '#1c2128':'transparent'}} onClick={()=>setParentId(p.task_id)}>
+            <div key={p.task_id} style={{padding:'0.35rem',fontSize:'0.7rem',cursor:'pointer',background: parentId===p.task_id ? 'var(--pill-bg)':'transparent'}} onClick={()=>setParentId(p.task_id)}>
               <span style={{opacity:0.65}}>{p.task_id}</span> {p.task_info?.slice(0,50) || ''}
             </div>
           ))}
@@ -105,8 +105,8 @@ export default function TaskPropertyModal({ open, onClose, taskId, allTasks, pro
         </div>
 
         <div style={{display:'flex',justifyContent:'flex-end',gap:'0.5rem',marginTop:'0.5rem'}}>
-          <button type="button" onClick={()=>onClose?.()} disabled={saving} style={{background:'none',border:'1px solid #30363d',color:'#c9d1d9',padding:'0.4rem 0.75rem',borderRadius:4,cursor:'pointer',fontSize:'0.75rem'}}>Cancel</button>
-          <button type="submit" disabled={saving || readOnly} style={{background:'#238636',border:'1px solid #2ea043',color:'#fff',padding:'0.45rem 0.9rem',borderRadius:4,cursor: readOnly? 'not-allowed':'pointer',fontSize:'0.75rem'}}>{saving ? 'Saving...' : 'Save'}</button>
+          <button type="button" onClick={()=>onClose?.()} disabled={saving} style={{background:'var(--btn-muted-bg)',border:'1px solid var(--btn-muted-border)',color:'var(--text)',padding:'0.4rem 0.75rem',borderRadius:4,cursor:'pointer',fontSize:'0.75rem'}}>Cancel</button>
+          <button type="submit" disabled={saving || readOnly} style={{background:'var(--success)',border:'1px solid var(--success-border)',color:'#fff',padding:'0.45rem 0.9rem',borderRadius:4,cursor: readOnly? 'not-allowed':'pointer',fontSize:'0.75rem'}}>{saving ? 'Saving...' : 'Save'}</button>
         </div>
       </form>
     </div>

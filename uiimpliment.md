@@ -125,6 +125,17 @@ Drag rules:
 - [x] Loading skeletons. (Project list, Kanban columns, Agent editor)
 - [x] Persist last selected project & tab in localStorage.
 - [x] Autosave enable/disable toggle for AGENTS.md.
+- [x] Task hierarchy with arbitrary nesting (parent_id), collapse/expand per task with persisted state.
+- [x] Cross-column ancestor hiding to avoid duplicate subtree noise when a root is collapsed in another column.
+- [x] Task property modal (edit name, status, parent) with cycle detection to prevent invalid parenting; commit comments auto-generated.
+- [x] Commit messages enriched with contextual comments for task creation, status moves, property edits, AGENTS.md saves, and project rename.
+- [x] ErrorBoundary component wrapping UI with reset + reload actions.
+- [x] Loading skeletons (project list, Kanban columns/cards, agent editor) using CSS theme tokens.
+- [x] Theme system (system/light/dark) with media query sync, manual cycle (light → dark → system), persisted preference, and extensive CSS variable palette.
+- [x] Full replacement of hard-coded dark colors with theme variables across components (Dashboard, KanbanBoard, TaskAddForm, TaskPropertyModal, SharePanel, HistoryList, LoadingSkeletons, LoginScreen, ErrorBoundary).
+- [x] Added semantic CSS variables: success/danger, pill badges, muted buttons, panel variants, skeleton colors.
+- [x] Persist last opened project + tab; restore on refresh.
+- [x] Autosave toggle state persisted.
   
 
 ### Phase E – QA & Docs
@@ -179,6 +190,33 @@ Response body (transport style):
 - Dragging task between columns immediately reflects new column & persists after refresh.
 - Creating a task appears in appropriate column instantly.
 - Share panel can grant & revoke access (confirmed by status reload).
+- Theme switch correctly adapts panels, inputs, buttons, and cards in both light and dark (no lingering dark hex codes in light mode UI elements).
+- Collapsing a parent task hides its subtree in other columns while maintaining local hierarchy in its current column.
+- Editing a task via the property modal produces an appropriate contextual commit message.
+
+## 17. Recently Added Enhancements (Summary)
+
+This section captures the latest wave of improvements beyond the original plan:
+
+- Hierarchical tasks with arbitrary depth, visual indentation, lineage color marker, and per-task collapse (persisted in localStorage).
+- Ancestor collapse propagation logic differentiating explicit user collapse vs cross-column visibility suppression.
+- TaskPropertyModal for name/status/parent edits with descendant cycle guard and contextual commit comments.
+- Rich commit messages for key user actions (create/move/edit tasks, project rename, AGENTS.md save/autosave toggles).
+- ThemeContext with system detection (prefers-color-scheme) + manual cycle and persistence.
+- Comprehensive theme token set replacing all hard-coded dark palette values; light mode now fully styled (inputs/cards/panels/buttons).
+- Loading skeleton components styled via theme tokens for consistent appearance across themes.
+- ErrorBoundary with reset + reload controls for resilience.
+- Autosave enable/disable toggle for AGENTS.md with persisted preference and manual save path.
+- Improved project dashboard UX: open/rename/delete icon buttons with hover reveal and RO pill badge.
+- Plus icon replaced by folder open icon for clarity.
+- Persistence of last opened project and active tab for seamless return sessions.
+
+Future possible enhancements:
+- Focus ring / keyboard accessibility pass.
+- Hover/focus state tokens (e.g., --btn-muted-hover) for clearer interaction cues.
+- Optional compact / dense layout toggle.
+- Search/filter in Kanban and agent editor.
+
 
 ---
 (Will update checkbox state as implementation proceeds.)

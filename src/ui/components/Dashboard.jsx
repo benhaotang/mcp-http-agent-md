@@ -5,6 +5,7 @@ import { ProjectListSkeleton } from './LoadingSkeletons';
 import { callTool } from '../lib/mcpClient';
 import { useApiKey } from './ApiKeyContext';
 import toast from 'react-hot-toast';
+import { useTheme } from './ClientProviders';
 
 export default function Dashboard({ onSelectProject }) {
   const { apiKey, clearApiKey } = useApiKey();
@@ -78,18 +79,30 @@ export default function Dashboard({ onSelectProject }) {
     }
   }
 
+  const { theme, resolved, setTheme } = useTheme();
+
+  function cycleTheme() {
+    setTheme(theme === 'light' ? 'dark' : theme === 'dark' ? 'system' : 'light');
+  }
+
+  function themeLabel() {
+    if (theme === 'system') return `System (${resolved})`;
+    return theme.charAt(0).toUpperCase() + theme.slice(1);
+  }
+
   return (
     <div>
       <header style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1rem'}}>
         <h1 style={{margin:0,fontSize:'1.4rem'}}>Projects</h1>
         <div style={{display:'flex',gap:'0.5rem',alignItems:'center'}}>
+          <button onClick={cycleTheme} title="Toggle theme (light → dark → system)" style={{background:'var(--panel-alt)',color:'var(--text)',border:'1px solid var(--border)',padding:'0.3rem 0.6rem',borderRadius:4,cursor:'pointer',fontSize:'0.65rem'}}>{themeLabel()}</button>
           <code style={{fontSize:'0.7rem',opacity:0.7}}>{apiKey.slice(0,4)}...{apiKey.slice(-4)}</code>
-          <button onClick={clearApiKey} style={{background:'#444',color:'#fff',border:'1px solid #555',padding:'0.3rem 0.6rem',borderRadius:4,cursor:'pointer'}}>Logout</button>
+          <button onClick={clearApiKey} style={{background:'var(--btn-muted-bg)',color:'var(--text)',border:'1px solid var(--btn-muted-border)',padding:'0.3rem 0.6rem',borderRadius:4,cursor:'pointer'}}>Logout</button>
         </div>
       </header>
       <form onSubmit={createProject} style={{display:'flex',gap:'0.5rem',marginBottom:'1rem'}}>
-        <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="New project name" style={{flex:1,padding:'0.5rem',borderRadius:4,border:'1px solid #30363d',background:'#0d1117',color:'#c9d1d9'}} />
-        <button disabled={creating} style={{background:'#238636',color:'#fff',border:'1px solid #2ea043',padding:'0.5rem 0.9rem',borderRadius:4,cursor:'pointer',fontWeight:600}}>Create</button>
+        <input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="New project name" style={{flex:1,padding:'0.5rem',borderRadius:4,border:'1px solid var(--border)',background:'var(--panel-alt)',color:'var(--text)'}} />
+        <button disabled={creating} style={{background:'var(--success)',color:'#fff',border:'1px solid var(--success-border)',padding:'0.5rem 0.9rem',borderRadius:4,cursor:'pointer',fontWeight:600}}>Create</button>
       </form>
   {isLoading && <ProjectListSkeleton />}
       {error && <p style={{color:'tomato'}}>Error: {error.message}</p>}
@@ -99,7 +112,7 @@ export default function Dashboard({ onSelectProject }) {
           const canEditMeta = p.permission === 'owner';
           const isRenaming = renamingId === p.id;
           return (
-            <li key={p.id} className="project-item" style={{position:'relative',border:'1px solid #30363d',borderRadius:6,padding:'0.75rem 0.75rem',background:'#161b22',display:'flex',justifyContent:'space-between',alignItems:'center',gap:'0.75rem'}}>
+            <li key={p.id} className="project-item" style={{position:'relative',border:'1px solid var(--border)',borderRadius:6,padding:'0.75rem 0.75rem',background:'var(--panel)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:'0.75rem'}}>
               <div style={{flex:1,minWidth:0}}>
                 {!isRenaming && (
                   <strong
@@ -109,12 +122,12 @@ export default function Dashboard({ onSelectProject }) {
                 )}
                 {isRenaming && (
                   <form onSubmit={(e)=>{e.preventDefault(); submitRename(p);}} style={{display:'flex',gap:'0.4rem',alignItems:'center'}}>
-                    <input autoFocus value={renameValue} onChange={e=>setRenameValue(e.target.value)} style={{flex:1,padding:'0.3rem 0.4rem',border:'1px solid #30363d',borderRadius:4,background:'#0d1117',color:'#c9d1d9',fontSize:'0.8rem'}} />
-                    <button type="submit" disabled={busy || !renameValue.trim()} style={{background:'#238636',color:'#fff',border:'1px solid #2ea043',padding:'0.3rem 0.6rem',borderRadius:4,cursor:'pointer',fontSize:'0.65rem'}}>Save</button>
-                    <button type="button" onClick={cancelRename} style={{background:'#30363d',color:'#fff',border:'1px solid #484f58',padding:'0.3rem 0.6rem',borderRadius:4,cursor:'pointer',fontSize:'0.65rem'}}>Cancel</button>
+                    <input autoFocus value={renameValue} onChange={e=>setRenameValue(e.target.value)} style={{flex:1,padding:'0.3rem 0.4rem',border:'1px solid var(--border)',borderRadius:4,background:'var(--panel-alt)',color:'var(--text)',fontSize:'0.8rem'}} />
+                    <button type="submit" disabled={busy || !renameValue.trim()} style={{background:'var(--success)',color:'#fff',border:'1px solid var(--success-border)',padding:'0.3rem 0.6rem',borderRadius:4,cursor:'pointer',fontSize:'0.65rem'}}>Save</button>
+                    <button type="button" onClick={cancelRename} style={{background:'var(--btn-muted-bg)',color:'var(--text)',border:'1px solid var(--btn-muted-border)',padding:'0.3rem 0.6rem',borderRadius:4,cursor:'pointer',fontSize:'0.65rem'}}>Cancel</button>
                   </form>
                 )}
-                {p.read_only && !isRenaming && <span style={{marginLeft:'0.5rem',fontSize:'0.6rem',background:'#555',padding:'0.15rem 0.4rem',borderRadius:4}}>RO</span>}
+                {p.read_only && !isRenaming && <span style={{marginLeft:'0.5rem',fontSize:'0.6rem',background:'var(--pill-bg)',padding:'0.15rem 0.4rem',borderRadius:4,border:'1px solid var(--pill-border)'}}>RO</span>}
               </div>
               <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'0.25rem'}}>
                 <small style={{opacity:0.55,fontSize:'0.6rem'}}>{busy? '...' : p.permission}</small>

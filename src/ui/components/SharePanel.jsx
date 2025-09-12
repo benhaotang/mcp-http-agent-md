@@ -65,8 +65,8 @@ export default function SharePanel({ projectId }) {
               <div style={{fontWeight:600,fontSize:'0.75rem',opacity:0.7}}>Read/Write</div>
               <ul style={{listStyle:'none',padding:0,margin:0,display:'flex',flexWrap:'wrap',gap:'0.4rem'}}>
                 {status.shared_read_write.map(u => (
-                  <li key={u.id} style={{background:'#161b22',border:'1px solid #30363d',padding:'0.25rem 0.5rem',borderRadius:4}}>
-                    {u.name || u.id} <button onClick={()=>revoke(u.id)} style={{marginLeft:4,background:'transparent',color:'#f85149',border:'none',cursor:'pointer'}}>✕</button>
+                  <li key={u.id} style={{background:'var(--panel-alt)',border:'1px solid var(--border)',padding:'0.25rem 0.5rem',borderRadius:4}}>
+                    {u.name || u.id} <button onClick={()=>revoke(u.id)} style={{marginLeft:4,background:'transparent',color:'var(--danger-border)',border:'none',cursor:'pointer'}}>✕</button>
                   </li>
                 ))}
               </ul>
@@ -77,8 +77,8 @@ export default function SharePanel({ projectId }) {
               <div style={{fontWeight:600,fontSize:'0.75rem',opacity:0.7}}>Read Only</div>
               <ul style={{listStyle:'none',padding:0,margin:0,display:'flex',flexWrap:'wrap',gap:'0.4rem'}}>
                 {status.shared_read.map(u => (
-                  <li key={u.id} style={{background:'#161b22',border:'1px solid #30363d',padding:'0.25rem 0.5rem',borderRadius:4}}>
-                    {u.name || u.id} <button onClick={()=>revoke(u.id)} style={{marginLeft:4,background:'transparent',color:'#f85149',border:'none',cursor:'pointer'}}>✕</button>
+                  <li key={u.id} style={{background:'var(--panel-alt)',border:'1px solid var(--border)',padding:'0.25rem 0.5rem',borderRadius:4}}>
+                    {u.name || u.id} <button onClick={()=>revoke(u.id)} style={{marginLeft:4,background:'transparent',color:'var(--danger-border)',border:'none',cursor:'pointer'}}>✕</button>
                   </li>
                 ))}
               </ul>
@@ -88,13 +88,13 @@ export default function SharePanel({ projectId }) {
       )}
       <form onSubmit={doShare} style={{marginTop:'1rem',display:'flex',flexDirection:'column',gap:'0.5rem',maxWidth:420}}>
         <div style={{display:'flex',gap:'0.5rem'}}>
-          <input value={target} onChange={e=>setTarget(e.target.value)} placeholder="Target user id" style={{flex:1,padding:'0.5rem',borderRadius:4,border:'1px solid #30363d',background:'#0d1117',color:'#c9d1d9'}} />
-          <select value={perm} onChange={e=>setPerm(e.target.value)} style={{padding:'0.5rem',borderRadius:4,border:'1px solid #30363d',background:'#161b22',color:'#c9d1d9'}}>
+          <input value={target} onChange={e=>setTarget(e.target.value)} placeholder="Target user id" style={{flex:1,padding:'0.5rem',borderRadius:4,border:'1px solid var(--border)',background:'var(--panel-alt)',color:'var(--text)'}} />
+          <select value={perm} onChange={e=>setPerm(e.target.value)} style={{padding:'0.5rem',borderRadius:4,border:'1px solid var(--border)',background:'var(--panel)',color:'var(--text)'}}>
             <option value="ro">ro</option>
             <option value="rw">rw</option>
           </select>
         </div>
-        <button disabled={busy} style={{background:'#1f6feb',color:'#fff',border:'1px solid #2f81f7',padding:'0.55rem 0.9rem',borderRadius:4,fontWeight:600,cursor:'pointer'}}>Share / Update</button>
+  <button disabled={busy} style={{background:'var(--accent)',color:'#fff',border:'1px solid var(--accent-hover)',padding:'0.55rem 0.9rem',borderRadius:4,fontWeight:600,cursor:'pointer'}}>Share / Update</button>
       </form>
     </div>
   );

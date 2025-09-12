@@ -17,3 +17,6 @@ yarn-error.log*
 
 # OS junk
 .DS_Store
+
+# Next js
+.next/

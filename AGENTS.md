@@ -7,6 +7,43 @@ This file provides guidance to agents when working with code in this repository.
 This is an MCP (Model Context Protocol) server exposed over Streamable HTTP for storing and updating project-level AGENTS.md and structured progress tasks per project.
 Progress tracking uses a structured tasks model stored in SQLite (via `sql.js`, persisted to `data/app.sqlite`). You can nest tasks by setting `parent_id` to the root task’s `task_id`; nesting can be arbitrarily deep.
 
+## UI Management Console (/ui)
+
+An integrated Next.js (App Router) management interface is mounted at `/ui` within the existing Express server. It enables authenticated users (API key only) to:
+
+- List/create/delete/rename projects (respecting ownership & permissions).
+- Edit `AGENTS.md` with full‑file markdown editor (autosave toggle + manual save, contextual commit messages).
+- View and manage tasks in a 4‑column Kanban (Pending / In Progress / Completed / Archived) with drag & drop status changes.
+- Create new tasks (ID generation via MCP tool) with auto commit comments.
+- Hierarchically nest tasks (arbitrary depth) by selecting parent; collapse/expand any task with persisted state.
+- Hide descendant tasks across other columns when an ancestor root is collapsed (reduces visual noise while keeping local hierarchy intact).
+- Edit task properties (name, status, parent) through a modal with cycle protection and contextual commit logging.
+- Inspect commit history (logs) for each project.
+- Share projects (grant/revoke RO/RW) via existing REST endpoints.
+- Toggle theme (light / dark / system) with system preference sync; theme preference is persisted.
+
+### UI Technical Notes
+
+- All write operations generate contextual commit messages (task creation, moves, property edits, project rename, AGENTS.md writes).
+- Theme implemented via CSS custom properties; no remaining hard-coded dark palette values in components (light mode is first-class).
+- Skeleton loaders (projects, Kanban, agent editor) provide perceived performance boost.
+- ErrorBoundary wraps client UI with reset + reload actions.
+- LocalStorage persists: API key, last opened project, last active tab, collapsed task ids, theme preference, AGENTS.md autosave setting.
+
+### Adding / Modifying UI Components
+
+- Use existing theme tokens (`globals.css`) instead of literal hex values. If a needed semantic color is missing, add paired light/dark tokens.
+- For new task mutations, include a short commit `comment` to preserve meaningful history.
+- Maintain accessibility: ensure buttons have discernible text or `aria-label`; extend focus styles if adding new interactive components.
+
+### Future Enhancements (Candidates)
+
+- Keyboard navigation for Kanban (arrow keys + Enter to open task modal).
+- Filter/search tasks by text or status, inline quick edit.
+- Diff/patch mode for AGENTS.md (server supports patch/diff operations already).
+- Optional compact density mode + user preference persistence.
+
+
 ## Development Commands
 
 - Run dev server: `pnpm dev` (nodemon + MCP Streamable HTTP at `POST http://localhost:3000/mcp`)

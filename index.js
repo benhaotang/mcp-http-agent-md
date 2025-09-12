@@ -1,4 +1,5 @@
 import express from 'express';
+import next from 'next';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
@@ -1306,15 +1307,28 @@ app.use('/auth', buildAuthRouter());
 // Mount under /project: exposes /project/list, /project/share, /project/status
 app.use('/project', buildProjectsRouter());
 
-// Start server
+// Start server (with Next.js UI mounted at /ui)
 async function start() {
+  const dev = process.env.NODE_ENV !== 'production';
+  const nextDir = path.join(__dirname, 'src', 'ui');
+  const nextApp = next({ dev, dir: nextDir });
+  const handle = nextApp.getRequestHandler();
+  await nextApp.prepare();
+
+  // Delegate all /ui* (including /ui/_next assets) directly to Next (basePath=/ui)
+  app.all('/ui*', (req, res) => {
+    //console.log('[ui] passthrough', req.method, req.originalUrl); // for debug
+    return handle(req, res);
+  });
+
   app.listen(PORT, HOST, () => {
     console.log(`MCP server listening on http://${HOST}:${PORT}${BASE_PATH}?apiKey=XXXX`);
     console.log(`Admin auth endpoint: http://${HOST}:${PORT}/auth (Bearer MAIN_API_KEY)`);
+    console.log(`UI available at: http://${HOST}:${PORT}/ui`);
   });
 }
 
-start().catch((err) => {
-  console.error('Failed to start server:', err);
+start().catch(err => {
+  console.error('Failed to start server (Next or Express init error):', err);
   process.exit(1);
 });

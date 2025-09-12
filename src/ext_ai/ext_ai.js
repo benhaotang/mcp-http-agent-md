@@ -15,18 +15,17 @@ import { infer as inferGemini } from "./gemini.js";
 
 function normalizeTools(toolInput) {
   if (!toolInput) return [];
-  const all = new Set(["grounding", "search", "crawling", "read", "code", "code_execution"]);
   if (typeof toolInput === "string") {
     const val = toolInput.toLowerCase().trim();
     if (val === "all") return ["grounding", "crawling", "code_execution"];
-    return all.has(val) ? [val] : [];
+    return val ? [val] : [];
   }
   if (Array.isArray(toolInput)) {
     const out = [];
     for (const t of toolInput) {
       const v = String(t || "").toLowerCase().trim();
       if (v === "all") return ["grounding", "crawling", "code_execution"];
-      if (all.has(v)) out.push(v);
+      if (v) out.push(v);
     }
     return Array.from(new Set(out));
   }
@@ -206,7 +205,20 @@ export async function runScratchpadSubagent(
 
   // Compute provider-supported tools and filter the request
   const caps = providerCapabilities(providerKey);
-  let chosenTools = requestedTools.length ? requestedTools.filter(t => caps.includes(t)) : caps;
+
+  if (providerKey !== 'mcp' && requestedTools.length > 0) {
+    const unsupported = requestedTools.filter(t => !caps.includes(t));
+    if (unsupported.length > 0) {
+      await dbSetSubagentRunStatus(userId, projectId, run_id, 'failure');
+      return {
+        run_id,
+        status: 'failure',
+        error: `Tool(s) not supported by ${providerKey}: [${unsupported.join(', ')}]`,
+      };
+    }
+  }
+
+  let chosenTools = requestedTools.length ? requestedTools : caps;
 
   // For MCP provider, interpret the raw 'tool' argument as specific MCP tool names (or 'all')
   let mcpToolSelection = null; // null means 'all'

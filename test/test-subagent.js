@@ -97,7 +97,12 @@ async function run() {
     assert(spInit?.scratchpad_id, 'scratchpad_initialize should return scratchpad_id');
 
     // Run subagent
-    const saArgs = { project_id: projectId, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'Reply with a short confirmation.', tool: 'all' };
+    const rawApiType = String(process.env.AI_API_TYPE || '').toLowerCase();
+    const isOpenAiCompat = ['openai-compatible', 'openai_compat', 'compat', 'openai_com'].includes(rawApiType);
+    const saArgs = { project_id: projectId, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'Reply with a short confirmation.' };
+    if (!isOpenAiCompat) {
+      saArgs.tool = 'all';
+    }
     const runRes = await client.callTool({ name: 'scratchpad_subagent', arguments: saArgs });
     const run = JSON.parse(runRes.content?.[0]?.text || '{}');
     assert(typeof run.run_id === 'string' && run.run_id.length > 0, 'run_id must be returned');
@@ -133,6 +138,17 @@ async function run() {
       assert(missing?.status === 'failure', 'Expected failure status for missing MCP server selection');
       assert(String(missing?.error || '').includes('mcp_requested_servers_not_found'), 'Expected mcp_requested_servers_not_found error');
       console.log('[subagent] Missing MCP server selection correctly failed.');
+    }
+
+    // Additional check: for non-MCP providers, requesting a non-existent tool should fail
+    if (apiType !== 'mcp') {
+      const fakeToolArgs = { project_id: projectId, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'test', tool: ['fake_tool', 'another_fake_tool'] };
+      const fakeToolRes = await client.callTool({ name: 'scratchpad_subagent', arguments: fakeToolArgs });
+      const fakeToolRun = JSON.parse(fakeToolRes.content?.[0]?.text || '{}');
+      assert(fakeToolRun?.status === 'failure', 'Expected failure status for fake_tool');
+      assert(String(fakeToolRun?.error || '').includes('Tool(s) not supported'), 'Expected "Tool(s) not supported" error for fake_tool');
+      assert(String(fakeToolRun?.error || '').includes('[fake_tool, another_fake_tool]'), 'Error message should contain the invalid tools');
+      console.log('[subagent] Invalid tool selection correctly failed.');
     }
 
     console.log('[subagent] Subagent tests passed.');

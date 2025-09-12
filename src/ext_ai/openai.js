@@ -5,7 +5,7 @@ function shouldUseWebSearch(tools) {
   // Only enable web search when explicitly asked for grounding/search.
   // Do NOT treat crawling/read as search.
   const s = new Set((tools || []).map(v => String(v || '').toLowerCase()));
-  return s.has('grounding') || s.has('search');
+  return s.has('grounding');
 }
 
 export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120 }) {

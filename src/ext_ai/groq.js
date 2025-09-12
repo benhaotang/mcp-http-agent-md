@@ -4,12 +4,12 @@ import { Groq } from 'groq-sdk';
 function buildTools(tools) {
   const set = new Set((tools || []).map(t => String(t || '').toLowerCase()));
   const arr = [];
-  // Only enable browser_search when grounding/search is requested.
-  if (set.has('grounding') || set.has('search')) {
+  // Only enable browser_search when grounding is requested.
+  if (set.has('grounding')) {
     arr.push({ type: 'browser_search' });
   }
-  // Code tool is separate (do not infer from crawling)
-  if (set.has('code') || set.has('code_execution')) {
+  // Code tool is separate
+  if (set.has('code_execution')) {
     arr.push({ type: 'code_interpreter' });
   }
   return arr;

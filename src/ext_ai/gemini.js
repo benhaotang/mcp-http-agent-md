@@ -3,9 +3,9 @@ import { GoogleGenAI } from "@google/genai";
 function buildGeminiTools(toolList) {
   const tools = [];
   const set = new Set(toolList || []);
-  if (set.has("grounding") || set.has("search")) tools.push({ googleSearch: {} });
-  if (set.has("crawling") || set.has("read")) tools.push({ urlContext: {} });
-  if (set.has("code") || set.has("code_execution")) tools.push({ codeExecution: {} });
+  if (set.has("grounding")) tools.push({ googleSearch: {} });
+  if (set.has("crawling")) tools.push({ urlContext: {} });
+  if (set.has("code_execution")) tools.push({ codeExecution: {} });
   return tools;
 }
 

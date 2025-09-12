@@ -45,7 +45,8 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
             const ann = Array.isArray(contentItem?.annotations) ? contentItem.annotations : [];
             for (const annotation of ann) {
               if (annotation?.type === 'url_citation' && annotation?.url) {
-                urls.push(String(annotation.url));
+                //urls.push(String(annotation.url));
+                if (urls.length < 1) urls.push('Sources are cited inline.'); // openai currently return sourced already inline cited
               }
             }
           }
@@ -58,10 +59,10 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
       }
     }
 
-    if (reasoningText) {
-      const reasoningSummary = reasoningText.split('\n').map((line) => `> ${line}`).join('\n');
-      text = reasoningSummary + (text ? `\n\n${text}` : '');
-    }
+    //if (reasoningText) {
+    //  const reasoningSummary = reasoningText.split('\n').map((line) => `> ${line}`).join('\n');
+    //  text = reasoningSummary + (text ? `\n\n${text}` : '');
+    //}
 
     return { text, codeSnippets: [], codeResults: [], urls, toolcall_history: [] };
   } catch (err) {

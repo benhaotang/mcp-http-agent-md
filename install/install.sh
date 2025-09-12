@@ -51,6 +51,8 @@ fi
 # Install dependencies
 echo -e "${BLUE}📦 Installing dependencies...${NC}"
 npm install
+npm run build:ui
+npm npm prune --prod
 
 # Setup environment file
 echo -e "${BLUE}⚙️  Setting up environment...${NC}"
@@ -63,7 +65,7 @@ rm .env.bak 2>/dev/null || true
 
 # Start the server in background
 echo -e "${BLUE}🚀 Starting server...${NC}"
-npm start &
+NODE_ENV=production npm start &
 SERVER_PID=$!
 
 # Wait for server to start
@@ -143,7 +145,7 @@ cat << EOF
 EOF
 echo
 echo -e "${BLUE}🖥️  Start the server from anywhere:${NC}"
-echo -e "${GREEN}cd ~/.config/mcp-http-agent-md && npm start${NC}"
+echo -e "${GREEN}cd ~/.config/mcp-http-agent-md && NODE_ENV=production npm start${NC}"
 echo
 echo -e "${BLUE}📖 Enable subagents (optional):${NC}"
 echo -e "Edit ${YELLOW}~/.config/mcp-http-agent-md/.env${NC} and set:"

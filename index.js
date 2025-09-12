@@ -1317,7 +1317,7 @@ async function start() {
 
   // Delegate all /ui* (including /ui/_next assets) directly to Next (basePath=/ui)
   app.all('/ui*', (req, res) => {
-    console.log('[ui] passthrough', req.method, req.originalUrl);
+    //console.log('[ui] passthrough', req.method, req.originalUrl); // for debug
     return handle(req, res);
   });
 

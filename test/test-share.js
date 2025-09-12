@@ -174,6 +174,43 @@ async function run() {
     const u2Status2 = await statusProject({ 'Authorization': `Bearer ${user2.apiKey}` }, projectId);
     assert(u2Status2.status === 404, 'After revoke, user2 should not access status');
 
+    // Test validation: name field required for user creation
+    console.log('Testing user creation validation...');
+    const emptyNameRes = await fetch(`${BASE}/auth/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${MAIN}` },
+      body: JSON.stringify({}),
+    });
+    assert(emptyNameRes.status === 400, 'User creation without name should fail with 400');
+    const emptyNameJson = await emptyNameRes.json();
+    assert(emptyNameJson.error === 'name field is required and cannot be empty', 'Should return specific error for missing name');
+
+    const nullNameRes = await fetch(`${BASE}/auth/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${MAIN}` },
+      body: JSON.stringify({ name: null }),
+    });
+    assert(nullNameRes.status === 400, 'User creation with null name should fail with 400');
+
+    const emptyStringNameRes = await fetch(`${BASE}/auth/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${MAIN}` },
+      body: JSON.stringify({ name: '' }),
+    });
+    assert(emptyStringNameRes.status === 400, 'User creation with empty string name should fail with 400');
+
+    const whitespaceNameRes = await fetch(`${BASE}/auth/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${MAIN}` },
+      body: JSON.stringify({ name: '   ' }),
+    });
+    assert(whitespaceNameRes.status === 400, 'User creation with whitespace-only name should fail with 400');
+
+    // Test validation: cannot share with owner themselves
+    console.log('Testing owner self-share prevention...');
+    const selfShareRes = await shareProject(ownerHeaders, { project_id: projectId, target_user_id: user1.id, permission: 'ro' });
+    assert(selfShareRes.status === 400 && selfShareRes.json.error === 'cannot_share_with_owner', 'Owner should not be able to share with themselves');
+
     console.log('All share tests passed');
   } catch (err) {
     console.error('Share tests failed:', err);

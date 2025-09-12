@@ -50,7 +50,10 @@ export function buildAuthRouter() {
   router.post('/users', async (req, res) => {
     try {
       const { name } = req.body || {};
-      const user = await createUser({ name });
+      if (!name || typeof name !== 'string' || name.trim() === '') {
+        return res.status(400).json({ error: 'name field is required and cannot be empty' });
+      }
+      const user = await createUser({ name: name.trim() });
       res.status(201).json(user);
     } catch (e) {
       res.status(500).json({ error: e?.message || 'Failed to create user' });

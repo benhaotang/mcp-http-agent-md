@@ -232,6 +232,21 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
   -d '{"jsonrpc":"2.0","id":"1","method":"tools/list"}'
 ```
 
+## Web UI (/ui)
+
+![WebUI Kanban view](assets/ui.png)
+
+An optional lightweight management console (Next.js App Router) is bundled and served at `/ui`:
+
+Dev mode: included automatically when you run `pnpm dev` (hot reloading). Visit `/ui` once the server starts.
+
+Production: build the UI once, then start the server in production mode:
+
+```
+pnpm build:ui
+NODE_ENV=production pnpm start
+```
+
 ### Tools
 
 - list_projects: List all project names.

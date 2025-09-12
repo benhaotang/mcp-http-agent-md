@@ -234,7 +234,7 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
 
 ## Web UI (/ui)
 
-![WebUI Kanban view](assets/ui.png)
+![WebUI Kanban view](assets/UI.png)
 
 An optional lightweight management console (Next.js App Router) is bundled and served at `/ui`:
 

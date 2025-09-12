@@ -52,7 +52,7 @@ fi
 echo -e "${BLUE}📦 Installing dependencies...${NC}"
 npm install
 npm run build:ui
-npm npm prune --prod
+npm prune --prod
 
 # Setup environment file
 echo -e "${BLUE}⚙️  Setting up environment...${NC}"

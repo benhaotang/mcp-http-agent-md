@@ -46,9 +46,18 @@ function mapFileRow(row) {
     original_name: row.original_name,
     file_type: row.file_type,
     uploaded_by: row.user_id ? { id: row.user_id, name: row.user_name || null } : null,
+    description: row.description || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+function sanitizeDescription(input) {
+  if (typeof input === 'undefined' || input === null) return null;
+  const str = String(input).trim();
+  if (!str) return null;
+  const limit = 4000;
+  return str.length > limit ? str.slice(0, limit) : str;
 }
 
 export function buildProjectFilesRouter() {
@@ -98,6 +107,10 @@ export function buildProjectFilesRouter() {
       if (access.permission === 'ro') return res.status(403).json({ error: 'read_only_project' });
       const file = req.file;
       if (!file) return res.status(400).json({ error: 'file_required' });
+      let description;
+      if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'description')) {
+        description = sanitizeDescription(req.body.description);
+      }
 
       const { ok, ext } = validateFileExtension(file.originalname || '');
       if (!ok) {
@@ -125,6 +138,7 @@ export function buildProjectFilesRouter() {
           fileId,
           fileType: file.mimetype || 'application/octet-stream',
           userId: user.id,
+          description,
         });
         meta = result.file;
         replacedFileId = result.replacedFileId;
@@ -143,6 +157,7 @@ export function buildProjectFilesRouter() {
           file_id: meta.file_id,
           original_name: meta.original_name,
           file_type: meta.file_type,
+          description: meta.description || null,
           created_at: meta.created_at,
           updated_at: meta.updated_at,
           uploaded_by: { id: user.id, name: user.name || null },

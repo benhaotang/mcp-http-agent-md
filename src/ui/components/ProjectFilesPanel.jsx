@@ -19,6 +19,8 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [busyFiles, setBusyFiles] = useState(() => new Set());
+  const [description, setDescription] = useState('');
+  const [expanded, setExpanded] = useState(() => new Set());
   const inputRef = useRef(null);
 
   const files = data?.files || [];
@@ -26,6 +28,7 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
 
   function resetInput() {
     setSelectedFile(null);
+    setDescription('');
     if (inputRef.current) {
       inputRef.current.value = '';
     }
@@ -42,6 +45,9 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
       const form = new FormData();
       form.append('project_id', projectId);
       form.append('file', selectedFile);
+      if (description.trim()) {
+        form.append('description', description.trim());
+      }
       const res = await fetch('/project/files', {
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}` },
@@ -63,6 +69,14 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
     } finally {
       setUploading(false);
     }
+  }
+
+  function toggleExpanded(fileId) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(fileId)) next.delete(fileId); else next.add(fileId);
+      return next;
+    });
   }
 
   function setFileBusy(fileId, busy) {
@@ -112,6 +126,16 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
             />
             <small style={{opacity:0.6,display:'block',marginTop:'0.35rem'}}>Allowed: pdf, md, txt. Files replace previous uploads with the same name.</small>
           </div>
+          <div style={{flex:'1 1 220px'}}>
+            <textarea
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Optional description (shown to collaborators)"
+              rows={3}
+              style={{width:'100%',background:'var(--panel-alt)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:6,padding:'0.5rem',resize:'vertical',minHeight:'90px'}}
+            />
+            <small style={{opacity:0.6,display:'block',marginTop:'0.35rem'}}>Descriptions longer than 200 characters are truncated in the list (expand to view all).</small>
+          </div>
           <button
             type="submit"
             disabled={uploading || !selectedFile}
@@ -136,6 +160,7 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
                   <th style={{padding:'0.5rem',borderBottom:'1px solid var(--border)'}}>Name</th>
                   <th style={{padding:'0.5rem',borderBottom:'1px solid var(--border)'}}>Type</th>
                   <th style={{padding:'0.5rem',borderBottom:'1px solid var(--border)'}}>Uploaded By</th>
+                  <th style={{padding:'0.5rem',borderBottom:'1px solid var(--border)'}}>Description</th>
                   <th style={{padding:'0.5rem',borderBottom:'1px solid var(--border)'}}>Updated</th>
                   {!effectiveReadOnly && <th style={{padding:'0.5rem',borderBottom:'1px solid var(--border)',textAlign:'right'}}>Actions</th>}
                 </tr>
@@ -143,6 +168,10 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
               <tbody>
                 {files.map(f => {
                   const busy = busyFiles.has(f.file_id);
+                  const descriptionText = f.description || '';
+                  const isExpanded = expanded.has(f.file_id);
+                  const long = descriptionText.length > 200;
+                  const shownDescription = (!long || isExpanded) ? descriptionText : `${descriptionText.slice(0,200)}…`;
                   return (
                     <tr key={f.file_id} style={{borderBottom:'1px solid var(--panel-alt)'}}>
                       <td style={{padding:'0.6rem 0.5rem',wordBreak:'break-word'}}>{f.original_name}</td>
@@ -151,6 +180,22 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
                         {f.uploaded_by ? (
                           <span>{f.uploaded_by.name || f.uploaded_by.id} <span style={{opacity:0.55,fontSize:'0.7rem'}}>({f.uploaded_by.id})</span></span>
                         ) : 'Unknown'}
+                      </td>
+                      <td style={{padding:'0.6rem 0.5rem',maxWidth:320,wordBreak:'break-word'}}>
+                        {descriptionText ? (
+                          <div style={{display:'flex',flexDirection:'column',gap:'0.25rem'}}>
+                            <span>{shownDescription}</span>
+                            {long && (
+                              <button
+                                type="button"
+                                onClick={() => toggleExpanded(f.file_id)}
+                                style={{alignSelf:'flex-start',background:'transparent',border:'none',color:'var(--accent)',cursor:'pointer',padding:0,fontSize:'0.75rem'}}
+                              >{isExpanded ? 'Collapse' : 'Expand'}</button>
+                            )}
+                          </div>
+                        ) : (
+                          <span style={{opacity:0.6}}>No description</span>
+                        )}
                       </td>
                       <td style={{padding:'0.6rem 0.5rem'}}>{formatTimestamp(f.updated_at)}</td>
                       {!effectiveReadOnly && (

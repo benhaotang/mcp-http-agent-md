@@ -119,6 +119,7 @@ async function openDb() {
       original_name TEXT NOT NULL,
       file_type TEXT NOT NULL,
       user_id TEXT,
+      description TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE,
@@ -184,6 +185,15 @@ async function openDb() {
         db.exec("ALTER TABLE backups ADD COLUMN modified_by TEXT");
       } catch (err) {
         console.error("Failed to add 'modified_by' column to backups:", err);
+      }
+    }
+    const filesRs = db.exec("PRAGMA table_info('project_files')");
+    const filesCols = new Set((filesRs && filesRs[0] && filesRs[0].values ? filesRs[0].values : []).map(r => String(r[1])));
+    if (!filesCols.has('description')) {
+      try {
+        db.exec("ALTER TABLE project_files ADD COLUMN description TEXT");
+      } catch (err) {
+        console.error("Failed to add 'description' column to project_files:", err);
       }
     }
   } catch {}
@@ -446,7 +456,7 @@ export async function getProjectShareInfo(projectId) {
 
 // ---------------- Project Files APIs ----------------
 
-export async function replaceProjectFile(ownerId, projectId, { originalName, fileId, fileType, userId }) {
+export async function replaceProjectFile(ownerId, projectId, { originalName, fileId, fileType, userId, description }) {
   const db = await openDb();
   const proj = await getProjectFullById(ownerId, projectId);
   if (!proj) throw new Error('project not found');
@@ -454,7 +464,7 @@ export async function replaceProjectFile(ownerId, projectId, { originalName, fil
   if (!name) throw new Error('original_name required');
   const now = new Date().toISOString();
   const normalized = name.toLowerCase();
-  const select = db.prepare('SELECT id, file_id, original_name, created_at FROM project_files WHERE project_id = $p AND lower(original_name) = $name');
+  const select = db.prepare('SELECT id, file_id, original_name, created_at, description FROM project_files WHERE project_id = $p AND lower(original_name) = $name');
   select.bind({ $p: proj.id, $name: normalized });
   const exists = select.step();
   let existing = null;
@@ -462,8 +472,9 @@ export async function replaceProjectFile(ownerId, projectId, { originalName, fil
   select.free();
 
   if (existing) {
-    const upd = db.prepare('UPDATE project_files SET file_id = $fileId, original_name = $name, file_type = $fileType, user_id = $userId, updated_at = $updated WHERE id = $id');
-    upd.bind({ $fileId: fileId, $name: name, $fileType: fileType, $userId: userId || null, $updated: now, $id: existing.id });
+    const nextDescription = typeof description === 'undefined' ? existing.description || null : coerceString(description);
+    const upd = db.prepare('UPDATE project_files SET file_id = $fileId, original_name = $name, file_type = $fileType, user_id = $userId, description = $desc, updated_at = $updated WHERE id = $id');
+    upd.bind({ $fileId: fileId, $name: name, $fileType: fileType, $userId: userId || null, $desc: nextDescription, $updated: now, $id: existing.id });
     upd.step();
     upd.free();
     await persistDb();
@@ -476,6 +487,7 @@ export async function replaceProjectFile(ownerId, projectId, { originalName, fil
         original_name: name,
         file_type: fileType,
         user_id: userId || null,
+        description: nextDescription,
         created_at: existing.created_at,
         updated_at: now,
       }
@@ -483,8 +495,9 @@ export async function replaceProjectFile(ownerId, projectId, { originalName, fil
   }
 
   const createdAt = now;
-  const ins = db.prepare('INSERT INTO project_files (id, project_id, file_id, original_name, file_type, user_id, created_at, updated_at) VALUES ($id, $project, $fileId, $name, $type, $user, $created, $updated)');
-  ins.bind({ $id: newUserId(), $project: proj.id, $fileId: fileId, $name: name, $type: fileType, $user: userId || null, $created: createdAt, $updated: now });
+  const desc = typeof description === 'undefined' ? null : coerceString(description);
+  const ins = db.prepare('INSERT INTO project_files (id, project_id, file_id, original_name, file_type, user_id, description, created_at, updated_at) VALUES ($id, $project, $fileId, $name, $type, $user, $desc, $created, $updated)');
+  ins.bind({ $id: newUserId(), $project: proj.id, $fileId: fileId, $name: name, $type: fileType, $user: userId || null, $desc: desc, $created: createdAt, $updated: now });
   ins.step();
   ins.free();
   await persistDb();
@@ -496,6 +509,7 @@ export async function replaceProjectFile(ownerId, projectId, { originalName, fil
       original_name: name,
       file_type: fileType,
       user_id: userId || null,
+      description: desc,
       created_at: createdAt,
       updated_at: now,
     }
@@ -507,7 +521,7 @@ export async function listProjectFiles(ownerId, projectId) {
   const proj = await getProjectFullById(ownerId, projectId);
   if (!proj) throw new Error('project not found');
   const stmt = db.prepare(`
-    SELECT pf.file_id, pf.original_name, pf.file_type, pf.user_id, pf.created_at, pf.updated_at, u.name AS user_name
+    SELECT pf.file_id, pf.original_name, pf.file_type, pf.user_id, pf.description, pf.created_at, pf.updated_at, u.name AS user_name
     FROM project_files pf
     LEFT JOIN users u ON u.id = pf.user_id
     WHERE pf.project_id = $project
@@ -523,6 +537,7 @@ export async function listProjectFiles(ownerId, projectId) {
       file_type: r.file_type,
       user_id: r.user_id || null,
       user_name: r.user_name || null,
+      description: r.description || null,
       created_at: r.created_at,
       updated_at: r.updated_at,
     });
@@ -535,7 +550,7 @@ export async function deleteProjectFile(ownerId, projectId, fileId) {
   const db = await openDb();
   const proj = await getProjectFullById(ownerId, projectId);
   if (!proj) throw new Error('project not found');
-  const sel = db.prepare('SELECT id, file_id, original_name, file_type, user_id, created_at, updated_at FROM project_files WHERE project_id = $project AND file_id = $fileId');
+  const sel = db.prepare('SELECT id, file_id, original_name, file_type, user_id, description, created_at, updated_at FROM project_files WHERE project_id = $project AND file_id = $fileId');
   sel.bind({ $project: proj.id, $fileId: fileId });
   const ok = sel.step();
   if (!ok) {
@@ -554,6 +569,7 @@ export async function deleteProjectFile(ownerId, projectId, fileId) {
     original_name: row.original_name,
     file_type: row.file_type,
     user_id: row.user_id || null,
+    description: row.description || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };

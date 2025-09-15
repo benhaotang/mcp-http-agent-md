@@ -20,7 +20,7 @@ An integrated Next.js (App Router) management interface is mounted at `/ui` with
 - Edit task properties (name, status, parent) through a modal with cycle protection and contextual commit logging.
 - Inspect commit history (logs) for each project.
 - Share projects (grant/revoke RO/RW) via existing REST endpoints.
-- Upload, list, and delete project documents in the Files tab (PDF/MD/TXT). Files respect project permissions; RO users can only view metadata.
+- Upload, list, and delete project documents in the Files tab (PDF/MD/TXT) with optional descriptions. Files respect project permissions; RO users can only view metadata.
 - Toggle theme (light / dark / system) with system preference sync; theme preference is persisted.
 
 ### UI Technical Notes
@@ -204,9 +204,9 @@ Endpoints:
 - Storage: Uploaded binaries are saved under `data/<project_id>/<file_id>` where `file_id` is a random 16-character hex string. Metadata persists in `project_files` (original name, MIME type, uploader id, timestamps).
 - Permissions: Owners and RW participants may upload or delete. RO participants may list metadata only (write attempts return `403`).
 - `POST /project/files`
-  - Multipart form accepting `project_id` and a single `file` (`.pdf|.md|.txt`, ≤20 MB). Uploading the same original filename replaces the previous version and deletes the old blob.
+  - Multipart form accepting `project_id`, a single `file` (`.pdf|.md|.txt`, ≤20 MB), and optional `description` (stored verbatim, UI truncates to 200 chars by default with expand). Uploading the same original filename replaces the previous version and deletes the old blob.
 - `GET /project/files?project_id=...`
-  - Returns `{ project_id, permission, files: [{ file_id, original_name, file_type, uploaded_by, created_at, updated_at }] }`.
+  - Returns `{ project_id, permission, files: [{ file_id, original_name, file_type, description, uploaded_by, created_at, updated_at }] }`.
 - `DELETE /project/files/:fileId?project_id=...`
   - Removes metadata and the stored binary when the caller has write access; returns `404` if missing.
 

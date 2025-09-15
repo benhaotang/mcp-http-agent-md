@@ -78,11 +78,14 @@ async function shareProject(ownerKey, body) {
   return { status: res.status, json };
 }
 
-async function uploadFile(apiKey, projectId, { name, content, type = 'text/plain' }) {
+async function uploadFile(apiKey, projectId, { name, content, type = 'text/plain', description }) {
   const form = new FormData();
   form.set('project_id', projectId);
   const file = new File([content], name, { type });
   form.set('file', file);
+  if (typeof description !== 'undefined') {
+    form.set('description', description);
+  }
   const res = await fetch(`${BASE}/project/files`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
@@ -169,7 +172,8 @@ async function run() {
     const uploadName = 'project-notes.txt';
 
     console.log('Owner upload...');
-    const ownerUpload = await uploadFile(owner.apiKey, projectId, { name: uploadName, content: fileContent });
+    const ownerDescription = 'Initial project notes with detailed summary of requirements.';
+    const ownerUpload = await uploadFile(owner.apiKey, projectId, { name: uploadName, content: fileContent, description: ownerDescription });
     assert(ownerUpload.status === 200 && ownerUpload.json?.file?.file_id, 'Owner upload should succeed');
     const firstFileId = ownerUpload.json.file.file_id;
 
@@ -179,9 +183,11 @@ async function run() {
     const listed = listForOwner.json.files[0];
     assert(listed.original_name === uploadName, 'Filename should match');
     assert(listed.uploaded_by?.id === owner.id, 'Owner should be recorded as uploader');
+    assert(listed.description === ownerDescription, 'Description should be stored on initial upload');
 
     console.log('RW user replaces the file...');
-    const rwUpload = await uploadFile(rwUser.apiKey, projectId, { name: uploadName, content: 'RW updated document contents.' });
+    const rwDescription = 'RW updated contents including follow-up notes and TODOs.';
+    const rwUpload = await uploadFile(rwUser.apiKey, projectId, { name: uploadName, content: 'RW updated document contents.', description: rwDescription });
     assert(rwUpload.status === 200 && rwUpload.json?.file?.file_id, 'RW upload should succeed');
     assert(rwUpload.json.file.file_id !== firstFileId, 'Replacement should get a new file id');
 
@@ -190,10 +196,12 @@ async function run() {
     assert(listAfterRw.json.files.length === 1, 'Still one file after replacement');
     const updated = listAfterRw.json.files[0];
     assert(updated.uploaded_by?.id === rwUser.id, 'Uploader should update to RW user');
+    assert(updated.description === rwDescription, 'Description should update on re-upload');
 
     console.log('RO user can only list...');
     const roList = await listFiles(roUser.apiKey, projectId);
     assert(roList.status === 200 && Array.isArray(roList.json?.files), 'RO user should list files');
+    assert(roList.json.files[0].description === rwDescription, 'RO list should include latest description');
     const roUploadAttempt = await uploadFile(roUser.apiKey, projectId, { name: 'ro.txt', content: 'RO should fail' });
     assert(roUploadAttempt.status === 403, 'RO upload attempt should be forbidden');
     const roDeleteAttempt = await deleteFile(roUser.apiKey, projectId, updated.file_id);

@@ -22,7 +22,8 @@
     "test:share": "node test/test-share.js",
     "test:mcp-share": "node test/test-mcp-share.js",
     "test:subagent": "node test/test-subagent.js",
-    "test:mcp": "node test/mcp.js"
+    "test:mcp": "node test/mcp.js",
+    "test:files": "node test/test-files.js"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^1.0.15",
@@ -37,6 +38,7 @@
     "dayjs": "^1.11.18",
     "express": "^4.18.2",
     "groq-sdk": "^0.32.0",
+    "multer": "^2.0.2",
     "nanoid": "^5.1.5",
     "next": "^15.5.3",
     "openai": "^5.20.0",

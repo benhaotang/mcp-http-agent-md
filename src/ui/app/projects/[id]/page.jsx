@@ -10,10 +10,12 @@ import SharePanel from '../../../components/SharePanel';
 import HistoryList from '../../../components/HistoryList';
 import Link from 'next/link';
 import Dashboard from '../../../components/Dashboard';
+import ProjectFilesPanel from '../../../components/ProjectFilesPanel';
 
 const TABS = [
   { key: 'tasks', label: 'Tasks' },
   { key: 'agent', label: 'AGENTS.md' },
+  { key: 'files', label: 'Files' },
   { key: 'share', label: 'Share' },
   { key: 'history', label: 'History' }
 ];
@@ -73,6 +75,7 @@ export default function ProjectPage() {
       )}
       {tab === 'agent' && <AgentEditor projectId={projectId} readOnly={readOnly} />}
       {tab === 'share' && <SharePanel projectId={projectId} />}
+      {tab === 'files' && <ProjectFilesPanel projectId={projectId} readOnly={readOnly} />}
       {tab === 'history' && <HistoryList projectId={projectId} />}
     </div>
   );

@@ -46,6 +46,7 @@ import {
 import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, listProjectLogs as vcListLogs, revertProject as vcRevertProject } from './src/version.js';
 import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
 import { buildProjectsRouter } from './src/share.js';
+import { buildProjectFilesRouter } from './src/project.js';
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -1304,8 +1305,9 @@ app.get('/', (req, res) => {
 app.use('/auth', buildAuthRouter());
 
 // Projects REST API (admin + user apiKey)
-// Mount under /project: exposes /project/list, /project/share, /project/status
+// Mount under /project: exposes /project/list, /project/share, /project/status, /project/files
 app.use('/project', buildProjectsRouter());
+app.use('/project', buildProjectFilesRouter());
 
 // Start server (with Next.js UI mounted at /ui)
 async function start() {

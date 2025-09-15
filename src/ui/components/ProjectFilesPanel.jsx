@@ -130,11 +130,10 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
-              placeholder="Optional description (shown to collaborators)"
+              placeholder="Optional descriptions for yourself and agents"
               rows={3}
-              style={{width:'100%',background:'var(--panel-alt)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:6,padding:'0.5rem',resize:'vertical',minHeight:'90px'}}
+              style={{width:'100%',background:'var(--panel-alt)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:6,padding:'0.5rem',resize:'vertical',minHeight:'60px'}}
             />
-            <small style={{opacity:0.6,display:'block',marginTop:'0.35rem'}}>Descriptions longer than 200 characters are truncated in the list (expand to view all).</small>
           </div>
           <button
             type="submit"

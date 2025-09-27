@@ -50,6 +50,7 @@ import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, lis
 import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
 import { buildProjectsRouter } from './src/share.js';
 import { buildProjectFilesRouter } from './src/project.js';
+import { loadFilePayload } from './src/ext_ai/fileUtils.js';
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -545,7 +546,7 @@ function buildMcpServer(userId, userName) {
 
     const readProjectFileTool = {
       name: 'read_project_file',
-      description: 'Read a specific chunk of an uploaded project document. Provide file_id from list_file plus optional byte offset start and length (defaults to start=0, length=10000). Returns text for markdown/txt, base64 for other types.',
+        description: 'Read a specific chunk of an uploaded project document. Provide file_id from list_file plus optional byte offset start and length (defaults to start=0, length=10000). Returns UTF-8 text (PDFs are parsed to text).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -941,6 +942,31 @@ function buildMcpServer(userId, userName) {
           let safeLength = Number.isFinite(rawLength) && rawLength > 0 ? Math.floor(rawLength) : DEFAULT_LENGTH;
           if (safeLength > MAX_LENGTH) safeLength = MAX_LENGTH;
 
+          const fileType = String(meta.file_type || '').toLowerCase();
+          const fileName = String(meta.original_name || '');
+          const isPdf = fileType.includes('pdf') || /\.pdf$/i.test(fileName);
+
+          let content = '';
+          let total = 0;
+          if (isPdf) {
+            const payload = await loadFilePayload(filePath, { mimeType: meta.file_type || '', originalName: fileName });
+            const text = String(payload?.text || '');
+            total = text.length;
+            const actualStart = Math.min(safeStart, total);
+            const chunk = text.slice(actualStart, actualStart + safeLength);
+            const truncated = actualStart + chunk.length < total;
+            return okText(JSON.stringify({
+              file_id: fid,
+              filename: fileName,
+              start: actualStart,
+              chars: chunk.length,
+              total_chars: total,
+              encoding: 'utf8',
+              content: chunk,
+              truncated,
+            }));
+          }
+
           const actualStart = Math.min(safeStart, totalBytes);
           const remaining = Math.max(totalBytes - actualStart, 0);
           const desired = safeLength > 0 ? safeLength : DEFAULT_LENGTH;
@@ -957,12 +983,7 @@ function buildMcpServer(userId, userName) {
               await handle.close();
             }
           }
-
-          const fileType = String(meta.file_type || '').toLowerCase();
-          const fileName = String(meta.original_name || '');
-          const isText = fileType.startsWith('text/') || fileType.includes('markdown') || /\.md$/i.test(fileName) || /\.txt$/i.test(fileName);
-          const encoding = isText ? 'utf8' : 'base64';
-          const content = encoding === 'utf8' ? chunk.toString('utf8') : chunk.toString('base64');
+          content = chunk.toString('utf8');
 
           return okText(JSON.stringify({
             file_id: fid,
@@ -970,7 +991,7 @@ function buildMcpServer(userId, userName) {
             start: actualStart,
             bytes: chunk.length,
             total_bytes: totalBytes,
-            encoding,
+            encoding: 'utf8',
             content,
             truncated: actualStart + chunk.length < totalBytes,
           }));

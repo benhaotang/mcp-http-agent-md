@@ -50,7 +50,7 @@ function addCitations(response) {
 }
 
 // Core inference for Gemini. Takes normalized inputs and returns a provider-agnostic result.
-export async function infer({ apiKey, model, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath }) {
+export async function infer({ apiKey, model, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath, fileMeta }) {
   const ai = new GoogleGenAI({ apiKey });
   const geminiTools = buildGeminiTools(tools);
 
@@ -73,7 +73,7 @@ export async function infer({ apiKey, model, systemPrompt, userPrompt, tools = [
 
   let attachment = null;
   if (filePath) {
-    attachment = await loadFilePayload(filePath);
+    attachment = await loadFilePayload(filePath, fileMeta || {});
     if (attachment?.kind === "pdf" && attachment?.base64) {
       userParts.push({
         inlineData: {

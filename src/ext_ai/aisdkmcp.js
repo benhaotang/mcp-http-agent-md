@@ -74,7 +74,7 @@ async function createMcpClientsFromConfig(conf) {
   return clients;
 }
 
-export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath }) {
+export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath, fileMeta }) {
   // Prepare OpenAI-compatible provider
   const baseURL = String(baseUrl || '').trim() || 'https://api.openai.com/v1';
   const provider = createOpenAICompatible({ name: 'openai-compatible', apiKey, baseURL });
@@ -118,7 +118,7 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
     let prompt = (systemText ? `${systemText}\n\n` : '') + userText;
 
     if (filePath) {
-      const attachment = await loadFilePayload(filePath);
+      const attachment = await loadFilePayload(filePath, fileMeta || {});
       const contextBlock = buildFileContextBlock(attachment);
       if (contextBlock) {
         prompt = `${prompt}\n\n<attached_file>\n\nFile attachment content:\n\n${contextBlock}\n\n</attached_file>`;

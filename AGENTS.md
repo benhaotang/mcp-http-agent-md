@@ -7,6 +7,22 @@ This file provides guidance to agents when working with code in this repository.
 This is an MCP (Model Context Protocol) server exposed over Streamable HTTP for storing and updating project-level AGENTS.md and structured progress tasks per project.
 Progress tracking uses a structured tasks model stored in SQLite (via `sql.js`, persisted to `data/app.sqlite`). You can nest tasks by setting `parent_id` to the root task’s `task_id`; nesting can be arbitrarily deep.
 
+### Recent Enhancements (2024-xx)
+
+- **Direct AI summaries for project files** — `/project/files/:fileId/summarize` now calls the external AI provider directly (no scratchpad/MCP hop). The Files tab detects `USE_EXTERNAL_AI` via `/env/public` and posts to the new endpoint with `save=true` so descriptions update automatically.
+  - Summaries follow the enforced Markdown template:
+    ```
+    # Summary
+    # Outline
+    # Summary per section/part/outline
+    ```
+  - Manual Summarize button shows a `Processing…` state per file while a background request runs; upload is never blocked.
+  - Uploading with an empty description autotrigger summarization after the file is stored.
+- **Backend storage + metadata reuse** — AI attachments no longer guess from filenames. `ext_ai.summarizeFile` resolves `file_id` → path + DB metadata (`original_name`, `file_type`) and passes `fileMeta` through to all providers (`openai`, `openai_com`, `gemini`, `groq`, `aisdkmcp`);
+  `fileUtils.loadFilePayload` respects the supplied MIME (PDF vs text) and uses `AI_ATTACHMENT_TEXT_LIMIT` for truncation.
+- **UI hinting** — The file description textbox placeholder appends “Leave blank to auto-summarize with AI on upload.” when external AI is enabled. The old MCP scratchpad-based path was removed.
+- **Public env endpoint** — `/env/public` exposes toggles such as `USE_EXTERNAL_AI` for the UI so it can hide/show AI affordances without probing MCP.
+
 ## UI Management Console (/ui)
 
 An integrated Next.js (App Router) management interface is mounted at `/ui` within the existing Express server. It enables authenticated users (API key only) to:
@@ -22,6 +38,19 @@ An integrated Next.js (App Router) management interface is mounted at `/ui` with
 - Share projects (grant/revoke RO/RW) via existing REST endpoints.
 - Upload, list, and delete project documents in the Files tab (PDF/MD/TXT) with optional descriptions. Files respect project permissions; RO users can only view metadata.
 - Toggle theme (light / dark / system) with system preference sync; theme preference is persisted.
+
+#### File Summaries (AI)
+- Summaries are generated via `POST /project/files/:fileId/summarize?project_id=...` (requires `USE_EXTERNAL_AI=true` and valid AI config). The UI’s Summarize button invokes this endpoint with `save=true`; to skip saving, send `save:false` and handle the returned Markdown manually.
+- The Files table shows a per-row status pill (“Processing…”) during the request. Toasts provide success/failure feedback.
+- For manual testing, curl example:
+  ```bash
+  curl -X POST \
+    -H "Authorization: Bearer $USER_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"project_id":"<project_id>","save":true}' \
+    http://localhost:3000/project/files/<file_id>/summarize
+  ```
+- When `USE_EXTERNAL_AI=false`, the UI hides Summarize controls and uploads behave exactly as before.
 
 ### UI Technical Notes
 

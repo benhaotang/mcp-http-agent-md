@@ -2,16 +2,18 @@
 // Orchestrates scratchpad fetch/update, run tracking, prompt building,
 // tool normalization, provider selection, and timeout behavior.
 
+import fs from "fs/promises";
+import path from "path";
+
 import {
   getScratchpad as dbGetScratchpad,
   updateScratchpadTasks as dbUpdateScratchpadTasks,
   createSubagentRun as dbCreateSubagentRun,
   setSubagentRunStatus as dbSetSubagentRunStatus,
+  resolveProjectAccess as dbResolveProjectAccess,
+  listProjectFiles as dbListProjectFiles,
+  getDataDir,
 } from "../db.js";
-
-// Provider modules: keep lightweight; only import ones we support now.
-// For initial step, only google (Gemini) is fully wired.
-import { infer as inferGemini } from "./gemini.js";
 
 function normalizeTools(toolInput) {
   if (!toolInput) return [];
@@ -106,7 +108,10 @@ export function getProviderMeta() {
 async function selectProvider(apiType) {
   const key = resolveApiType(apiType);
   try {
-    if (key === "google") return { key, infer: inferGemini };
+    if (key === "google") {
+      const mod = await import("./gemini.js");
+      return { key, infer: inferGemini };
+    }
     if (key === "openai") {
       const mod = await import("./openai.js");
       return { key, infer: mod.infer };
@@ -129,9 +134,44 @@ async function selectProvider(apiType) {
   }
 }
 
+async function prepareAiEnv() {
+  const apiType = resolveApiType(process.env.AI_API_TYPE || 'google');
+  const apiKey = String(process.env.AI_API_KEY || '').trim();
+  const { key: providerKey, infer, error: providerErr } = await selectProvider(apiType);
+  const model = String(process.env.AI_MODEL || defaultModelFor(providerKey)).replace(/^"|"$/g, "");
+  const baseUrl = String(process.env.AI_BASE_ENDPOINT || '').trim();
+  const aiTimeoutSec = Number.isFinite(Number(process.env.AI_TIMEOUT)) ? Number(process.env.AI_TIMEOUT) : 120;
+  return { providerKey, infer, providerErr, model, baseUrl, aiTimeoutSec, apiKey };
+}
+
+async function resolveAttachmentFromFileId(userId, projectId, fileId) {
+  const trimmed = String(fileId || "").trim();
+  if (!trimmed) return null;
+  if (!/^[a-f0-9]{16}$/i.test(trimmed)) {
+    throw new Error("invalid_file_id");
+  }
+  const access = await dbResolveProjectAccess(userId, projectId);
+  if (!access) {
+    throw new Error("project_not_found_or_access_denied");
+  }
+  const files = await dbListProjectFiles(access.owner_id, access.project_id);
+  const meta = files.find((f) => String(f.file_id) === trimmed);
+  if (!meta) {
+    throw new Error("file_not_found");
+  }
+  const baseDir = path.join(getDataDir(), access.project_id);
+  const resolved = path.join(baseDir, trimmed);
+  try {
+    await fs.access(resolved);
+  } catch (err) {
+    throw new Error("file_missing_on_disk");
+  }
+  return { path: resolved, meta };
+}
+
 export async function runScratchpadSubagent(
   userId,
-  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_path, filePath }
+  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_path, filePath, file_id, fileId }
 ) {
   // Validate required args
   const sid = String(scratchpad_id || "").trim();
@@ -175,15 +215,8 @@ export async function runScratchpadSubagent(
     ? `${userPrompt}\n\nContext (scratchpad common_memory):\n${sp.common_memory}`
     : userPrompt;
 
-  // Prepare environment
-  const apiType = resolveApiType(process.env.AI_API_TYPE || "google");
-  const apiKey = String(process.env.AI_API_KEY || "").trim();
-  const { key: providerKey, infer, error: providerErr } = await selectProvider(apiType);
-  const model = String(process.env.AI_MODEL || defaultModelFor(providerKey)).replace(/^"|"$/g, "");
-  const baseUrl = String(process.env.AI_BASE_ENDPOINT || "").trim();
-  const aiTimeoutSec = Number.isFinite(Number(process.env.AI_TIMEOUT))
-    ? Number(process.env.AI_TIMEOUT)
-    : 120;
+  // Prepare environment (reused across helpers)
+  const { providerKey, infer, providerErr, model, baseUrl, apiKey, aiTimeoutSec } = await prepareAiEnv();
   const softReturnMs = 25000;
 
   if (!infer) {
@@ -247,9 +280,31 @@ export async function runScratchpadSubagent(
   const defaultSys = `You are a general problem-solving agent with access to ${toolNamesForPrompt}. Keep answers concise and accurate.`;
   const systemPrompt = String(sys_prompt || defaultSys);
 
-  const attachmentPath = [filePath, file_path]
+  const attachmentPathArg = [filePath, file_path]
     .map((p) => (typeof p === 'string' ? p.trim() : ''))
     .find(Boolean) || null;
+  const attachmentFileId = [fileId, file_id]
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .find(Boolean) || null;
+
+  let attachmentPath = attachmentPathArg;
+  let attachmentMeta = null;
+  if (!attachmentPath && attachmentFileId) {
+    try {
+      const att = await resolveAttachmentFromFileId(userId, projectId, attachmentFileId);
+      attachmentPath = att.path;
+      attachmentMeta = att.meta ? { mimeType: att.meta.file_type || '', originalName: att.meta.original_name || '' } : null;
+    } catch (err) {
+      try {
+        await dbSetSubagentRunStatus(userId, projectId, run_id, "failure");
+      } catch {}
+      return {
+        run_id,
+        status: "failure",
+        error: `file_attachment_error:${String(err?.message || err)}`,
+      };
+    }
+  }
 
   const runWork = async () => {
     await dbSetSubagentRunStatus(userId, projectId, run_id, "in_progress");
@@ -263,6 +318,7 @@ export async function runScratchpadSubagent(
         tools: providerKey === 'mcp' ? (mcpToolSelection || 'all') : chosenTools,
         timeoutSec: aiTimeoutSec,
         filePath: attachmentPath,
+        fileMeta: attachmentMeta,
       });
 
       const textOut = String(result?.text || "");
@@ -334,3 +390,57 @@ export async function runScratchpadSubagent(
 }
 
 export default { runScratchpadSubagent };
+
+// Direct summary generator (no scratchpad, no MCP); returns raw text
+export async function summarizeFile(
+  userId,
+  { project_id, file_id, prompt: promptOverride }
+) {
+  const projectId = String(project_id || '').trim();
+  const fid = String(file_id || '').trim();
+  if (!projectId) return { error: 'project_id_required' };
+  if (!fid) return { error: 'file_id_required' };
+
+  const { providerKey, infer, providerErr, model, baseUrl, apiKey, aiTimeoutSec } = await prepareAiEnv();
+
+  if (!infer) {
+    return { error: providerErr ? `provider_unavailable:${providerKey} (${providerErr})` : `unsupported_ai_api_type:${providerKey}` };
+  }
+  if (!apiKey) {
+    return { error: 'missing_api_key' };
+  }
+
+  let att;
+  try {
+    att = await resolveAttachmentFromFileId(userId, projectId, fid);
+  } catch (e) {
+    return { error: String(e?.message || e) };
+  }
+
+  const systemPrompt = 'You are a concise, accurate summarizer.';
+  const prompt = String(promptOverride || '').trim() || `Read the attached document and produce the following Markdown sections only:
+
+# Summary
+A concise but detailed summary of the document.
+
+# Outline
+A hierarchical outline of the document (sections/subsections).
+
+# Summary per section/part/outline
+For each section/part in the outline, provide a short summary capturing key points.
+
+Only return these three sections as Markdown.`;
+
+  const result = await infer({
+    apiKey,
+    model,
+    baseUrl,
+    systemPrompt,
+    userPrompt: prompt,
+    tools: [],
+    timeoutSec: aiTimeoutSec,
+    filePath: att.path,
+    fileMeta: att.meta ? { mimeType: att.meta.file_type || '', originalName: att.meta.original_name || '' } : null,
+  });
+  return { text: String(result?.text || '') };
+}

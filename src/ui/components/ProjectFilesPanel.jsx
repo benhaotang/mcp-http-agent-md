@@ -3,6 +3,7 @@ import React, { useState, useRef } from 'react';
 import toast from 'react-hot-toast';
 import { useApiKey } from './ApiKeyContext';
 import { useProjectFiles } from '../lib/hooks';
+// No MCP tools required for summarization anymore.
 
 function formatTimestamp(ts) {
   if (!ts) return '—';
@@ -22,6 +23,24 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
   const [description, setDescription] = useState('');
   const [expanded, setExpanded] = useState(() => new Set());
   const inputRef = useRef(null);
+  const [externalAi, setExternalAi] = useState(false);
+  const [summarizingFiles, setSummarizingFiles] = useState(() => new Set());
+
+  React.useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch('/env/public');
+        if (!mounted) return;
+        if (!res.ok) { setExternalAi(false); return; }
+        const json = await res.json().catch(() => ({}));
+        setExternalAi(Boolean(json?.USE_EXTERNAL_AI));
+      } catch {
+        setExternalAi(false);
+      }
+    })();
+    return () => { mounted = false; };
+  }, []);
 
   const files = data?.files || [];
   const effectiveReadOnly = readOnly || data?.permission === 'ro';
@@ -31,6 +50,28 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
     setDescription('');
     if (inputRef.current) {
       inputRef.current.value = '';
+    }
+  }
+
+  async function summarizeFileDirect(file) {
+    try {
+      if (!externalAi) return;
+      setSummarizingFiles(prev => new Set(prev).add(file.file_id));
+      const res = await fetch(`/project/files/${encodeURIComponent(file.file_id)}/summarize?project_id=${encodeURIComponent(projectId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ save: true })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error || `HTTP ${res.status}`);
+      }
+      mutate();
+      toast.success('Summary generated');
+    } catch (err) {
+      toast.error(`Summarize failed: ${err?.message || err}`);
+    } finally {
+      setSummarizingFiles(prev => { const next = new Set(prev); next.delete(file.file_id); return next; });
     }
   }
 
@@ -61,9 +102,14 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
         } catch {}
         throw new Error(msg);
       }
+      const payload = await res.json().catch(() => null);
       toast.success('File uploaded');
+      const uploadedFile = payload?.file;
       resetInput();
       mutate();
+      if (!description.trim() && externalAi && uploadedFile) {
+        summarizeFileDirect(uploadedFile);
+      }
     } catch (err) {
       toast.error(`Upload failed: ${err.message || err}`);
     } finally {
@@ -130,7 +176,7 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
-              placeholder="Optional descriptions for yourself and agents"
+              placeholder={externalAi ? "Optional descriptions for yourself and agents. Leave blank to auto‑summarize with AI on upload." : "Optional descriptions for yourself and agents"}
               rows={3}
               style={{width:'100%',background:'var(--panel-alt)',color:'var(--text)',border:'1px solid var(--border)',borderRadius:6,padding:'0.5rem',resize:'vertical',minHeight:'60px'}}
             />
@@ -199,6 +245,16 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
                       <td style={{padding:'0.6rem 0.5rem'}}>{formatTimestamp(f.updated_at)}</td>
                       {!effectiveReadOnly && (
                         <td style={{padding:'0.6rem 0.5rem',textAlign:'right'}}>
+                          {externalAi && (() => {
+                            const isSummarizing = summarizingFiles.has(f.file_id);
+                            return (
+                            <button
+                              onClick={() => summarizeFileDirect(f)}
+                              disabled={busy || isSummarizing}
+                                style={{background:'var(--accent)',opacity:(busy||isSummarizing)?0.6:1,color:'#fff',border:'1px solid var(--accent-hover)',padding:'0.35rem 0.75rem',borderRadius:6,marginRight:8,cursor:(busy||isSummarizing)?'wait':'pointer'}}
+                              >{isSummarizing ? 'Processing…' : 'Summarize'}</button>
+                            );
+                          })()}
                           <button
                             onClick={() => handleDelete(f)}
                             disabled={busy}

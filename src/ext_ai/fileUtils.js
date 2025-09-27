@@ -37,18 +37,24 @@ function truncateText(text) {
   return `${truncated}\n\n[Truncated to ${TEXT_LIMIT} characters]`;
 }
 
-export async function loadFilePayload(filePath) {
+// opts: { mimeType?: string, originalName?: string, extOverride?: string }
+export async function loadFilePayload(filePath, opts = {}) {
   if (!filePath) return null;
   const resolved = path.resolve(filePath);
-  const ext = path.extname(resolved).toLowerCase();
-  if (!SUPPORTED_EXTS.has(ext)) {
-    throw new Error(`unsupported_file_extension:${ext || 'unknown'}`);
+  const metaMime = String(opts?.mimeType || '').toLowerCase();
+  let ext = String(opts?.extOverride || '').toLowerCase();
+  if (!ext) {
+    if (metaMime.includes('pdf')) ext = '.pdf';
+    else if (metaMime.includes('markdown')) ext = '.md';
+    else if (metaMime.includes('text')) ext = '.txt';
+    else ext = path.extname(resolved).toLowerCase();
   }
+  const usePdf = metaMime.includes('pdf') || ext === '.pdf';
 
-  const fileName = path.basename(resolved);
-  const mimeType = MIME_BY_EXT[ext] || 'application/octet-stream';
+  const fileName = String(opts?.originalName || path.basename(resolved));
+  const mimeType = metaMime || MIME_BY_EXT[ext] || 'application/octet-stream';
 
-  if (ext === '.pdf') {
+  if (usePdf) {
     const buffer = await fs.readFile(resolved);
     const base64 = buffer.toString('base64');
     let text = '';
@@ -59,11 +65,12 @@ export async function loadFilePayload(filePath) {
       text = '';
       console.warn(`[ext_ai] Failed to extract text from PDF '${fileName}':`, err?.message || err);
     }
-    return { kind: 'pdf', ext, fileName, filePath: resolved, mimeType, base64, text };
+    return { kind: 'pdf', ext: '.pdf', fileName, filePath: resolved, mimeType, base64, text };
   }
 
+  // Default: treat as UTF-8 text (Markdown/Text)
   const text = truncateText(await fs.readFile(resolved, 'utf-8'));
-  return { kind: 'text', ext, fileName, filePath: resolved, mimeType, text };
+  return { kind: 'text', ext: ext || '.txt', fileName, filePath: resolved, mimeType, text };
 }
 
 export function buildFileContextBlock(payload) {

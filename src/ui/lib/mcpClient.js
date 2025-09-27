@@ -62,6 +62,46 @@ export async function callTool(apiKey, name, args = {}) {
   try { return JSON.parse(ct); } catch { return ct; }
 }
 
+export async function listMcpTools(apiKey) {
+  async function send(method) {
+    const body = { jsonrpc: '2.0', id: rpcId++, method, params: {} };
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    let res;
+    try {
+      res = await fetch(`/mcp?apiKey=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!res || !res.ok) throw new Error('Failed to list tools');
+    const json = await res.json();
+    return json;
+  }
+  // Try canonical then legacy
+  let json;
+  try {
+    json = await send('tools/list');
+  } catch {
+    json = await send('list_tools');
+  }
+  const tools = (json?.result?.tools || []).map(t => t.name);
+  return tools;
+}
+
+export async function waitForSubagent(apiKey, projectId, runId, { maxChecks = 6, intervalMs = 4000 } = {}) {
+  for (let i = 0; i < maxChecks; i++) {
+    const info = await callTool(apiKey, 'scratchpad_subagent_status', { project_id: projectId, run_id: runId });
+    if (info && info.status && info.status !== 'pending' && info.status !== 'in_progress') return info;
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+  return { run_id: runId, status: 'timeout' };
+}
+
 export function normalizeError(e) {
   if (!e) return 'Unknown error';
   if (typeof e === 'string') return e;

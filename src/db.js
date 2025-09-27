@@ -575,6 +575,26 @@ export async function deleteProjectFile(ownerId, projectId, fileId) {
   };
 }
 
+export async function updateProjectFileDescription(ownerId, projectId, fileId, description) {
+  const db = await openDb();
+  const proj = await getProjectFullById(ownerId, projectId);
+  if (!proj) throw new Error('project not found');
+  const sel = db.prepare('SELECT id FROM project_files WHERE project_id = $project AND file_id = $fileId');
+  sel.bind({ $project: proj.id, $fileId: String(fileId) });
+  const ok = sel.step();
+  if (!ok) { sel.free(); throw new Error('file_not_found'); }
+  const row = sel.getAsObject();
+  sel.free();
+  const now = new Date().toISOString();
+  const desc = typeof description === 'undefined' || description === null ? null : String(description);
+  const upd = db.prepare('UPDATE project_files SET description = $desc, updated_at = $now WHERE id = $id');
+  upd.bind({ $desc: desc, $now: now, $id: row.id });
+  upd.step();
+  upd.free();
+  await persistDb();
+  return { ok: true, file_id: String(fileId), description: desc, updated_at: now };
+}
+
 export async function getProjectFullById(ownerId, projectId) {
   const db = await openDb();
   const stmt = db.prepare('SELECT id, name, user_id, agent_json, progress_json, hash, hash_history, created_at, updated_at FROM user_projects WHERE id = $pid AND user_id = $u');

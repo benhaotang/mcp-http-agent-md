@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
 import crypto from 'crypto';
+import { summarizeFile as extSummarizeFile } from './ext_ai/ext_ai.js';
 
 import {
   getUserByApiKey,
@@ -10,6 +11,7 @@ import {
   listProjectFiles as dbListProjectFiles,
   replaceProjectFile as dbReplaceProjectFile,
   deleteProjectFile as dbDeleteProjectFile,
+  updateProjectFileDescription as dbUpdateProjectFileDescription,
   getDataDir,
 } from './db.js';
 
@@ -193,6 +195,65 @@ export function buildProjectFilesRouter() {
     } catch (e) {
       console.error('files:delete error', e);
       return res.status(500).json({ error: 'files_delete_failed', message: e?.message || 'Delete failed' });
+    }
+  });
+
+  router.patch('/files/:fileId', async (req, res) => {
+    try {
+      const projectId = String(req.query.project_id || '').trim();
+      if (!projectId) return res.status(400).json({ error: 'project_id_required' });
+      const user = await resolveUserFromRequest(req);
+      if (!user) return res.status(401).json({ error: 'apiKey required' });
+      const access = await resolveProjectAccess(user.id, projectId);
+      if (!access) return res.status(404).json({ error: 'project_not_found' });
+      if (access.permission === 'ro') return res.status(403).json({ error: 'read_only_project' });
+      const fileId = String(req.params.fileId || '').trim();
+      if (!fileId) return res.status(400).json({ error: 'file_id_required' });
+      const description = (req.body && Object.prototype.hasOwnProperty.call(req.body, 'description'))
+        ? sanitizeDescription(req.body.description)
+        : null;
+      const result = await dbUpdateProjectFileDescription(access.owner_id, access.project_id, fileId, description);
+      return res.json(result);
+    } catch (e) {
+      const msg = e?.message || 'update_failed';
+      const code = /project not found/i.test(msg) ? 404 : (/file_not_found/i.test(msg) ? 404 : 500);
+      return res.status(code).json({ error: 'files_update_failed', message: msg });
+    }
+  });
+
+  // Direct file summarization (uses external AI directly; optional save to description)
+  router.post('/files/:fileId/summarize', async (req, res) => {
+    try {
+      const projectId = String(req.query.project_id || req.body?.project_id || '').trim();
+      if (!projectId) return res.status(400).json({ error: 'project_id_required' });
+      const user = await resolveUserFromRequest(req);
+      if (!user) return res.status(401).json({ error: 'apiKey required' });
+      const access = await resolveProjectAccess(user.id, projectId);
+      if (!access) return res.status(404).json({ error: 'project_not_found' });
+      if (String(process.env.USE_EXTERNAL_AI || '').toLowerCase() === 'false') {
+        return res.status(400).json({ error: 'external_ai_disabled' });
+      }
+      const fileId = String(req.params.fileId || '').trim();
+      if (!fileId) return res.status(400).json({ error: 'file_id_required' });
+      const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt : undefined;
+      const save = !!req.body?.save;
+
+      const out = await extSummarizeFile(user.id, { project_id: access.project_id, file_id: fileId, prompt });
+      if (!out || out.error) {
+        const msg = out?.error || 'summarize_failed';
+        const code = /missing_api_key/i.test(msg) ? 400 : 500;
+        return res.status(code).json({ error: msg });
+      }
+      const summary = String(out.text || '').trim();
+      let saved = false;
+      if (save && summary) {
+        await dbUpdateProjectFileDescription(access.owner_id, access.project_id, fileId, summary);
+        saved = true;
+      }
+      return res.json({ summary, saved });
+    } catch (e) {
+      console.error('files:summarize error', e);
+      return res.status(500).json({ error: 'summarize_failed', message: e?.message || 'Summarize failed' });
     }
   });
 

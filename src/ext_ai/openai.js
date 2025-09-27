@@ -9,7 +9,7 @@ function shouldUseWebSearch(tools) {
   return s.has('grounding');
 }
 
-export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath }) {
+export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath, fileMeta }) {
   const client = new OpenAI({ apiKey, baseURL: String(baseUrl || '').trim() || undefined });
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const hardTimer = setTimeout(() => { try { controller?.abort(); } catch {} }, Math.max(1000, Number(timeoutSec || 0) * 1000));
@@ -22,7 +22,7 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
   const userContent = [{ type: 'input_text', text: String(userPrompt || '') || 'Prompt missing?' }];
 
   if (filePath) {
-    const attachment = await loadFilePayload(filePath);
+    const attachment = await loadFilePayload(filePath, fileMeta || {});
     if (attachment?.kind === 'pdf' && attachment?.base64) {
       userContent.unshift({
         type: 'input_file',

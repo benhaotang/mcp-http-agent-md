@@ -82,15 +82,21 @@ async function run() {
     // 1) tools/list
     const list = await client.listTools({});
     const toolNames = (list.tools || []).map(t => t.name).sort();
+    const externalAiEnabled = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false';
     const expected = [
-      'list_projects','init_project','delete_project','rename_project',
+      'list_projects','list_file',
+      'init_project','delete_project','rename_project',
       'read_agent','write_agent','read_progress',
       'progress_add','progress_set_new_state',
       'get_agents_md_best_practices_and_examples','generate_task_ids',
       'list_project_logs','revert_project',
-      // Scratchpad tools
       'scratchpad_initialize','review_scratchpad','scratchpad_update_task','scratchpad_append_common_memory'
     ];
+    if (externalAiEnabled) {
+      expected.push('scratchpad_subagent','scratchpad_subagent_status');
+    } else {
+      expected.push('read_project_file');
+    }
     for (const n of expected) assert(toolNames.includes(n), `Missing tool: ${n}`);
 
     // --- Versioning tests ---

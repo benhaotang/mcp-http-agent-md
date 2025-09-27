@@ -32,3 +32,25 @@ export function useLogs(apiKey, projectId) {
   const ready = useClientReady();
   return useSWR(ready && apiKey && projectId ? ['logs', apiKey, projectId] : null, () => toolFetcher(apiKey, 'list_project_logs', { project_id: projectId }), { refreshInterval: 30000 });
 }
+
+async function fetchProjectFiles(apiKey, projectId) {
+  const res = await fetch(`/project/files?project_id=${encodeURIComponent(projectId)}`, {
+    headers: { Authorization: `Bearer ${apiKey}` }
+  });
+  if (!res.ok) {
+    try {
+      const data = await res.json();
+      const msg = data?.message || data?.error || `status ${res.status}`;
+      throw new Error(msg);
+    } catch (err) {
+      if (err instanceof Error && err.message) throw err;
+      throw new Error(`status ${res.status}`);
+    }
+  }
+  return res.json();
+}
+
+export function useProjectFiles(apiKey, projectId) {
+  const ready = useClientReady();
+  return useSWR(ready && apiKey && projectId ? ['files', apiKey, projectId] : null, () => fetchProjectFiles(apiKey, projectId), { refreshInterval: 15000 });
+}

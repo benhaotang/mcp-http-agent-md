@@ -3,6 +3,7 @@ import next from 'next';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import { promises as fsp } from 'fs';
 import { fileURLToPath } from 'url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -40,12 +41,16 @@ import {
   updateScratchpadTasks as dbUpdateScratchpadTasks,
   appendScratchpadCommonMemory as dbAppendScratchpadCommonMemory,
   getSubagentRun as dbGetSubagentRun,
+  listProjectFiles as dbListProjectFiles,
   listProjectsForUserWithShares as dbListProjectsWithShares,
   resolveProjectAccess as dbResolveProjectAccess,
+  getDataDir,
 } from './src/db.js';
 import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, listProjectLogs as vcListLogs, revertProject as vcRevertProject } from './src/version.js';
 import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
 import { buildProjectsRouter } from './src/share.js';
+import { buildProjectFilesRouter } from './src/project.js';
+import { loadFilePayload } from './src/ext_ai/fileUtils.js';
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -539,6 +544,21 @@ function buildMcpServer(userId, userName) {
       } catch {}
     }
 
+    const readProjectFileTool = {
+      name: 'read_project_file',
+        description: 'Read a specific chunk of an uploaded project document. Provide file_id from list_file plus optional byte offset start and length (defaults to start=0, length=10000). Returns UTF-8 text (PDFs are parsed to text).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project_id: { type: 'string' },
+          file_id: { type: 'string' },
+          start: { type: 'number', minimum: 0, description: 'Optional byte offset to begin reading. Defaults to 0.' },
+          length: { type: 'number', minimum: 1, description: 'Optional byte length to read. Defaults to 10000. Max 100000.' }
+        },
+        required: ['project_id','file_id']
+      }
+    };
+
     const result = { tools: [
       {
         name: 'list_projects',
@@ -546,8 +566,19 @@ function buildMcpServer(userId, userName) {
         inputSchema: { type: 'object', properties: {} }
       },
       {
+        name: 'list_file',
+        description: 'List uploaded documents for a project. Returns each file\'s original filename, description, and file_id so you can reference them when attaching to tools.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string' }
+          },
+          required: ['project_id']
+        }
+      },
+      {
         name: 'scratchpad_subagent',
-        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: project_id, scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"). ${toolsSentence}${mcpToolsHint} The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
+        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: project_id, scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"), file_path (absolute path) or file_id (from list_file) to attach a document. ${toolsSentence}${mcpToolsHint} The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -556,7 +587,9 @@ function buildMcpServer(userId, userName) {
             task_id: { type: 'string' },
             prompt: { type: 'string' },
             sys_prompt: { type: 'string' , description: 'Default: You are a general problem-solving agent with access to tool_list. Keep answers concise and accurate.'},
-            tool: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] }
+            tool: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] },
+            file_path: { type: 'string', description: 'Absolute path to a local file to attach (bypasses file_id lookup).' },
+            file_id: { type: 'string', description: 'Project file_id (see list_file). Server resolves to disk path securely.' }
           },
           required: ['project_id','scratchpad_id','task_id','prompt']
         }
@@ -825,6 +858,7 @@ function buildMcpServer(userId, userName) {
     const externalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false' ? true : false;
     if (!externalAi) {
       result.tools = result.tools.filter(t => t.name !== 'scratchpad_subagent' && t.name !== 'scratchpad_subagent_status');
+      result.tools.push(readProjectFileTool);
     }
     return result;
   });
@@ -842,6 +876,139 @@ function buildMcpServer(userId, userName) {
         const rows = await ops.listProjects();
         const projects = rows.map(r => ({ id: r.id, name: r.name, owner_id: r.owner_id, permission: r.permission, read_only: r.permission === 'ro' }));
         return okText(JSON.stringify({ projects }));
+      }
+      case 'list_file': {
+        const { project_id } = args || {};
+        try {
+          const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
+          if (!acc) {
+            return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          }
+          const rows = await dbListProjectFiles(acc.owner_id, acc.project_id);
+          const files = rows.map((row) => ({
+            file_id: row.file_id,
+            filename: row.original_name,
+            description: row.description || null,
+          }));
+          return okText(JSON.stringify({ files }));
+        } catch (err) {
+          const msg = String(err?.message || err || 'list files failed');
+          return okText(JSON.stringify({ error: 'list_files_failed', message: msg }));
+        }
+      }
+      case 'read_project_file': {
+        const { project_id, file_id, start, length } = args || {};
+        const pid = String(project_id || '').trim();
+        const fid = String(file_id || '').trim();
+        if (!pid) {
+          return okText(JSON.stringify({ error: 'project_id_required', message: 'project_id is required' }));
+        }
+        if (!fid) {
+          return okText(JSON.stringify({ error: 'file_id_required', message: 'file_id is required' }));
+        }
+        if (!/^[a-f0-9]{16}$/i.test(fid)) {
+          return okText(JSON.stringify({ error: 'invalid_file_id', message: 'file_id must be 16-character hex string' }));
+        }
+        try {
+          const acc = await dbResolveProjectAccess(userId, pid);
+          if (!acc) {
+            return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          }
+          if (acc.permission === 'ro') {
+            return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
+          }
+          const rows = await dbListProjectFiles(acc.owner_id, acc.project_id);
+          const meta = rows.find(r => String(r.file_id) === fid);
+          if (!meta) {
+            return okText(JSON.stringify({ error: 'file_not_found', message: 'file_id not found for this project' }));
+          }
+
+          const baseDir = path.join(getDataDir(), acc.project_id);
+          const filePath = path.join(baseDir, fid);
+          const rel = path.relative(baseDir, filePath);
+          if (rel.startsWith('..')) {
+            return okText(JSON.stringify({ error: 'invalid_path', message: 'Invalid file location' }));
+          }
+
+          const stats = await fsp.stat(filePath);
+          const totalBytes = stats.size;
+
+          const DEFAULT_LENGTH = 10_000;
+          const MAX_LENGTH = 100_000;
+
+          const rawStart = Number(start);
+          const rawLength = Number(length);
+          const safeStart = Number.isFinite(rawStart) && rawStart >= 0 ? Math.floor(rawStart) : 0;
+          let safeLength = Number.isFinite(rawLength) && rawLength > 0 ? Math.floor(rawLength) : DEFAULT_LENGTH;
+          if (safeLength > MAX_LENGTH) safeLength = MAX_LENGTH;
+
+          const fileType = String(meta.file_type || '').toLowerCase();
+          const fileName = String(meta.original_name || '');
+          const isPdf = fileType.includes('pdf') || /\.pdf$/i.test(fileName);
+
+          let content = '';
+          let total = 0;
+          if (isPdf) {
+            const payload = await loadFilePayload(filePath, { mimeType: meta.file_type || '', originalName: fileName });
+            const text = String(payload?.text || '');
+            total = text.length;
+            const actualStart = Math.min(safeStart, total);
+            const chunk = text.slice(actualStart, actualStart + safeLength);
+            const truncated = actualStart + chunk.length < total;
+            return okText(JSON.stringify({
+              file_id: fid,
+              filename: fileName,
+              start: actualStart,
+              chars: chunk.length,
+              total_chars: total,
+              encoding: 'utf8',
+              content: chunk,
+              truncated,
+            }));
+          }
+
+          const actualStart = Math.min(safeStart, totalBytes);
+          const remaining = Math.max(totalBytes - actualStart, 0);
+          const desired = safeLength > 0 ? safeLength : DEFAULT_LENGTH;
+          const byteCount = Math.min(remaining, desired);
+
+          let chunk = Buffer.alloc(0);
+          if (byteCount > 0) {
+            const handle = await fsp.open(filePath, 'r');
+            try {
+              const buffer = Buffer.alloc(byteCount);
+              const { bytesRead } = await handle.read(buffer, 0, byteCount, actualStart);
+              chunk = bytesRead < byteCount ? buffer.slice(0, bytesRead) : buffer;
+            } finally {
+              await handle.close();
+            }
+          }
+          content = chunk.toString('utf8');
+
+          return okText(JSON.stringify({
+            file_id: fid,
+            filename: fileName,
+            start: actualStart,
+            bytes: chunk.length,
+            total_bytes: totalBytes,
+            encoding: 'utf8',
+            content,
+            truncated: actualStart + chunk.length < totalBytes,
+          }));
+        } catch (err) {
+          if (err?.code === 'ENOENT') {
+            return okText(JSON.stringify({ error: 'file_not_found', message: 'File not found on disk' }));
+          }
+          const msg = String(err?.message || err || 'read file failed');
+          const code = /project not found/i.test(msg)
+            ? 'project_not_found'
+            : (/read_only_project/i.test(msg)
+              ? 'read_only_project'
+              : (/file_not_found/i.test(msg)
+                ? 'file_not_found'
+                : 'read_file_failed'));
+          return okText(JSON.stringify({ error: code, message: msg }));
+        }
       }
       case 'init_project': {
         const { name: projName, agent, progress } = args || {};
@@ -1066,13 +1233,22 @@ function buildMcpServer(userId, userName) {
         }
       }
       case 'scratchpad_subagent': {
-        const { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool } = args || {};
+        const { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_id, file_path } = args || {};
         try {
           const externalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false';
           if (!externalAi) {
             return okText(JSON.stringify({ error: 'external_ai_disabled', message: 'scratchpad_subagent is disabled (USE_EXTERNAL_AI=false)' }));
           }
-          const result = await runScratchpadSubagent(userId, { project_id: String(project_id || ''), scratchpad_id, task_id, prompt, sys_prompt, tool });
+          const result = await runScratchpadSubagent(userId, {
+            project_id: String(project_id || ''),
+            scratchpad_id,
+            task_id,
+            prompt,
+            sys_prompt,
+            tool,
+            file_id,
+            file_path,
+          });
           return okText(JSON.stringify(result));
         } catch (err) {
           const msg = String(err?.message || err || 'subagent failed');
@@ -1300,12 +1476,19 @@ app.get('/', (req, res) => {
   );
 });
 
+// Minimal public env snapshot for UI feature flags
+app.get('/env/public', (req, res) => {
+  const useExternalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false';
+  res.json({ USE_EXTERNAL_AI: useExternalAi });
+});
+
 // Admin auth router under /auth (Bearer MAIN_API_KEY)
 app.use('/auth', buildAuthRouter());
 
 // Projects REST API (admin + user apiKey)
-// Mount under /project: exposes /project/list, /project/share, /project/status
+// Mount under /project: exposes /project/list, /project/share, /project/status, /project/files
 app.use('/project', buildProjectsRouter());
+app.use('/project', buildProjectFilesRouter());
 
 // Start server (with Next.js UI mounted at /ui)
 async function start() {

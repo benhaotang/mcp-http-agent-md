@@ -7,6 +7,22 @@ This file provides guidance to agents when working with code in this repository.
 This is an MCP (Model Context Protocol) server exposed over Streamable HTTP for storing and updating project-level AGENTS.md and structured progress tasks per project.
 Progress tracking uses a structured tasks model stored in SQLite (via `sql.js`, persisted to `data/app.sqlite`). You can nest tasks by setting `parent_id` to the root task’s `task_id`; nesting can be arbitrarily deep.
 
+### Recent Enhancements (2024-xx)
+
+- **Direct AI summaries for project files** — `/project/files/:fileId/summarize` now calls the external AI provider directly (no scratchpad/MCP hop). The Files tab detects `USE_EXTERNAL_AI` via `/env/public` and posts to the new endpoint with `save=true` so descriptions update automatically.
+  - Summaries follow the enforced Markdown template:
+    ```
+    # Summary
+    # Outline
+    # Summary per section/part/outline
+    ```
+  - Manual Summarize button shows a `Processing…` state per file while a background request runs; upload is never blocked.
+  - Uploading with an empty description autotrigger summarization after the file is stored.
+- **Backend storage + metadata reuse** — AI attachments no longer guess from filenames. `ext_ai.summarizeFile` resolves `file_id` → path + DB metadata (`original_name`, `file_type`) and passes `fileMeta` through to all providers (`openai`, `openai_com`, `gemini`, `groq`, `aisdkmcp`);
+  `fileUtils.loadFilePayload` respects the supplied MIME (PDF vs text) and uses `AI_ATTACHMENT_TEXT_LIMIT` for truncation.
+- **UI hinting** — The file description textbox placeholder appends “Leave blank to auto-summarize with AI on upload.” when external AI is enabled. The old MCP scratchpad-based path was removed.
+- **Public env endpoint** — `/env/public` exposes toggles such as `USE_EXTERNAL_AI` for the UI so it can hide/show AI affordances without probing MCP.
+
 ## UI Management Console (/ui)
 
 An integrated Next.js (App Router) management interface is mounted at `/ui` within the existing Express server. It enables authenticated users (API key only) to:
@@ -20,7 +36,21 @@ An integrated Next.js (App Router) management interface is mounted at `/ui` with
 - Edit task properties (name, status, parent) through a modal with cycle protection and contextual commit logging.
 - Inspect commit history (logs) for each project.
 - Share projects (grant/revoke RO/RW) via existing REST endpoints.
+- Upload, list, and delete project documents in the Files tab (PDF/MD/TXT) with optional descriptions. Files respect project permissions; RO users can only view metadata.
 - Toggle theme (light / dark / system) with system preference sync; theme preference is persisted.
+
+#### File Summaries (AI)
+- Summaries are generated via `POST /project/files/:fileId/summarize?project_id=...` (requires `USE_EXTERNAL_AI=true` and valid AI config). The UI’s Summarize button invokes this endpoint with `save=true`; to skip saving, send `save:false` and handle the returned Markdown manually.
+- The Files table shows a per-row status pill (“Processing…”) during the request. Toasts provide success/failure feedback.
+- For manual testing, curl example:
+  ```bash
+  curl -X POST \
+    -H "Authorization: Bearer $USER_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{"project_id":"<project_id>","save":true}' \
+    http://localhost:3000/project/files/<file_id>/summarize
+  ```
+- When `USE_EXTERNAL_AI=false`, the UI hides Summarize controls and uploads behave exactly as before.
 
 ### UI Technical Notes
 
@@ -81,6 +111,7 @@ Notes:
 Minimal Node.js ESM app with Express + MCP Streamable HTTP:
 - `index.js` — Express app, MCP server (Streamable HTTP) at `POST /mcp`; defines and wires all MCP tools; mounts admin router under `/auth`.
 - `src/db.js` — SQLite (sql.js) persistence, schema and CRUD for users, projects, and structured tasks (including cascade + lock rules).
+- `src/project.js` — Express router for project file uploads (list/upload/delete) with on-disk storage and permission checks.
 - `src/auth.js` — Admin auth middleware (Bearer `MAIN_API_KEY`), user API key auth for MCP, and `/auth` routes.
 - `src/env.js` - Read and load .env file.
 - `src/ext_ai/` — External AI subagent controller and providers:
@@ -156,6 +187,7 @@ Project selection: All task tools take a `name` (project name). The server resol
 - Commit message: Provide a short `comment` with `write_agent`, `progress_add`, `progress_set_new_state`, or `rename_project` to set the commit message. If omitted, the server uses an ISO timestamp plus the tool name.
 - Initial commit: `init_project` immediately creates an `init` commit and returns its `hash`.
 - Logs: Use `list_project_logs` to retrieve `{ hash, message, created_at }` for the project’s current history.
+- File uploads do not create commits; ensure important documentation updates are reflected in AGENTS.md or task notes manually.
 - Reverts: `revert_project { name, hash }` restores the full snapshot (AGENTS.md + tasks) and trims the visible `hash_history` after that point. No branches are created. Admins can still access older commits if needed.
 
 ## Auth
@@ -197,6 +229,17 @@ Endpoints:
   - Shared participant response: `{ owner: { id, name }, project: { id, name }, your_permission: 'ro'|'rw' }`.
   - Others (no access): `404` with `{ error: 'project_not_found' }`.
 
+### Project Files (`/project/files`)
+- Storage: Uploaded binaries are saved under `data/<project_id>/<file_id>` where `file_id` is a random 16-character hex string. Metadata persists in `project_files` (original name, MIME type, uploader id, timestamps).
+- Permissions: Owners and RW participants may upload or delete. RO participants may list metadata only (write attempts return `403`).
+- `POST /project/files`
+  - Multipart form accepting `project_id`, a single `file` (`.pdf|.md|.txt`, ≤20 MB), and optional `description` (stored verbatim, UI truncates to 200 chars by default with expand). Uploading the same original filename replaces the previous version and deletes the old blob.
+- `GET /project/files?project_id=...`
+  - Returns `{ project_id, permission, files: [{ file_id, original_name, file_type, description, uploaded_by, created_at, updated_at }] }`.
+- `DELETE /project/files/:fileId?project_id=...`
+  - Removes metadata and the stored binary when the caller has write access; returns `404` if missing.
+- External AI providers can now ingest uploaded `.pdf`, `.md`, and `.txt` documents when a `file_path` is supplied via the scratchpad tooling. Gemini and OpenAI send PDFs as native file attachments; other providers receive the extracted text appended to the prompt. Extraction is truncated based on `AI_ATTACHMENT_TEXT_LIMIT` (default 120 000 characters, set `-1` for no truncation).
+
 Sharing Data Model and Rules:
 - Project ownership stays with the original creator (row in `user_projects`).
 - Shares are stored as two JSON arrays on the project row:
@@ -235,3 +278,7 @@ Examples (curl):
      http://localhost:3000/project/share`
 - Status (owner/participant/admin):
   - `curl -H "Authorization: Bearer $API_KEY" "http://localhost:3000/project/status?project_id=<pid>"`
+
+## Testing Notes
+
+- `node test/test-files.js` exercises the `/project/files` workflow (owner/RW uploads, RO restrictions, replacement + delete cleanup).

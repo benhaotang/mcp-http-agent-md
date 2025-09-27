@@ -112,6 +112,21 @@ async function openDb() {
       FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_runs_user_project ON subagent_runs(user_id, project_id);
+    CREATE TABLE IF NOT EXISTS project_files (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      file_id TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      file_type TEXT NOT NULL,
+      user_id TEXT,
+      description TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (project_id) REFERENCES user_projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+      UNIQUE(project_id, original_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_files_project ON project_files(project_id);
   `);
   // Enable foreign key constraints in SQLite (helps catch bad user_id early)
   try { db.exec('PRAGMA foreign_keys = ON;'); } catch {}
@@ -172,6 +187,15 @@ async function openDb() {
         console.error("Failed to add 'modified_by' column to backups:", err);
       }
     }
+    const filesRs = db.exec("PRAGMA table_info('project_files')");
+    const filesCols = new Set((filesRs && filesRs[0] && filesRs[0].values ? filesRs[0].values : []).map(r => String(r[1])));
+    if (!filesCols.has('description')) {
+      try {
+        db.exec("ALTER TABLE project_files ADD COLUMN description TEXT");
+      } catch (err) {
+        console.error("Failed to add 'description' column to project_files:", err);
+      }
+    }
   } catch {}
   dbInstance = db;
   return dbInstance;
@@ -181,6 +205,10 @@ async function persistDb() {
   if (!dbInstance) return;
   const data = dbInstance.export();
   await fs.writeFile(DB_PATH, Buffer.from(data));
+}
+
+export function getDataDir() {
+  return DATA_DIR;
 }
 
 function newApiKey() {
@@ -424,6 +452,147 @@ export async function getProjectShareInfo(projectId) {
   const proj = await getProjectById(projectId);
   if (!proj) throw new Error('project not found');
   return proj;
+}
+
+// ---------------- Project Files APIs ----------------
+
+export async function replaceProjectFile(ownerId, projectId, { originalName, fileId, fileType, userId, description }) {
+  const db = await openDb();
+  const proj = await getProjectFullById(ownerId, projectId);
+  if (!proj) throw new Error('project not found');
+  const name = String(originalName || '').trim();
+  if (!name) throw new Error('original_name required');
+  const now = new Date().toISOString();
+  const normalized = name.toLowerCase();
+  const select = db.prepare('SELECT id, file_id, original_name, created_at, description FROM project_files WHERE project_id = $p AND lower(original_name) = $name');
+  select.bind({ $p: proj.id, $name: normalized });
+  const exists = select.step();
+  let existing = null;
+  if (exists) existing = select.getAsObject();
+  select.free();
+
+  if (existing) {
+    const nextDescription = typeof description === 'undefined' ? existing.description || null : coerceString(description);
+    const upd = db.prepare('UPDATE project_files SET file_id = $fileId, original_name = $name, file_type = $fileType, user_id = $userId, description = $desc, updated_at = $updated WHERE id = $id');
+    upd.bind({ $fileId: fileId, $name: name, $fileType: fileType, $userId: userId || null, $desc: nextDescription, $updated: now, $id: existing.id });
+    upd.step();
+    upd.free();
+    await persistDb();
+    const replaced = existing.file_id ? String(existing.file_id) : null;
+    return {
+      replacedFileId: replaced,
+      file: {
+        file_id: fileId,
+        project_id: proj.id,
+        original_name: name,
+        file_type: fileType,
+        user_id: userId || null,
+        description: nextDescription,
+        created_at: existing.created_at,
+        updated_at: now,
+      }
+    };
+  }
+
+  const createdAt = now;
+  const desc = typeof description === 'undefined' ? null : coerceString(description);
+  const ins = db.prepare('INSERT INTO project_files (id, project_id, file_id, original_name, file_type, user_id, description, created_at, updated_at) VALUES ($id, $project, $fileId, $name, $type, $user, $desc, $created, $updated)');
+  ins.bind({ $id: newUserId(), $project: proj.id, $fileId: fileId, $name: name, $type: fileType, $user: userId || null, $desc: desc, $created: createdAt, $updated: now });
+  ins.step();
+  ins.free();
+  await persistDb();
+  return {
+    replacedFileId: null,
+    file: {
+      file_id: fileId,
+      project_id: proj.id,
+      original_name: name,
+      file_type: fileType,
+      user_id: userId || null,
+      description: desc,
+      created_at: createdAt,
+      updated_at: now,
+    }
+  };
+}
+
+export async function listProjectFiles(ownerId, projectId) {
+  const db = await openDb();
+  const proj = await getProjectFullById(ownerId, projectId);
+  if (!proj) throw new Error('project not found');
+  const stmt = db.prepare(`
+    SELECT pf.file_id, pf.original_name, pf.file_type, pf.user_id, pf.description, pf.created_at, pf.updated_at, u.name AS user_name
+    FROM project_files pf
+    LEFT JOIN users u ON u.id = pf.user_id
+    WHERE pf.project_id = $project
+    ORDER BY lower(pf.original_name) ASC
+  `);
+  stmt.bind({ $project: proj.id });
+  const rows = [];
+  while (stmt.step()) {
+    const r = stmt.getAsObject();
+    rows.push({
+      file_id: r.file_id,
+      original_name: r.original_name,
+      file_type: r.file_type,
+      user_id: r.user_id || null,
+      user_name: r.user_name || null,
+      description: r.description || null,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    });
+  }
+  stmt.free();
+  return rows;
+}
+
+export async function deleteProjectFile(ownerId, projectId, fileId) {
+  const db = await openDb();
+  const proj = await getProjectFullById(ownerId, projectId);
+  if (!proj) throw new Error('project not found');
+  const sel = db.prepare('SELECT id, file_id, original_name, file_type, user_id, description, created_at, updated_at FROM project_files WHERE project_id = $project AND file_id = $fileId');
+  sel.bind({ $project: proj.id, $fileId: fileId });
+  const ok = sel.step();
+  if (!ok) {
+    sel.free();
+    return null;
+  }
+  const row = sel.getAsObject();
+  sel.free();
+  const del = db.prepare('DELETE FROM project_files WHERE id = $id');
+  del.bind({ $id: row.id });
+  del.step();
+  del.free();
+  await persistDb();
+  return {
+    file_id: row.file_id,
+    original_name: row.original_name,
+    file_type: row.file_type,
+    user_id: row.user_id || null,
+    description: row.description || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+export async function updateProjectFileDescription(ownerId, projectId, fileId, description) {
+  const db = await openDb();
+  const proj = await getProjectFullById(ownerId, projectId);
+  if (!proj) throw new Error('project not found');
+  const sel = db.prepare('SELECT id FROM project_files WHERE project_id = $project AND file_id = $fileId');
+  sel.bind({ $project: proj.id, $fileId: String(fileId) });
+  const ok = sel.step();
+  if (!ok) { sel.free(); throw new Error('file_not_found'); }
+  const row = sel.getAsObject();
+  sel.free();
+  const now = new Date().toISOString();
+  const desc = typeof description === 'undefined' || description === null ? null : String(description);
+  const upd = db.prepare('UPDATE project_files SET description = $desc, updated_at = $now WHERE id = $id');
+  upd.bind({ $desc: desc, $now: now, $id: row.id });
+  upd.step();
+  upd.free();
+  await persistDb();
+  return { ok: true, file_id: String(fileId), description: desc, updated_at: now };
 }
 
 export async function getProjectFullById(ownerId, projectId) {

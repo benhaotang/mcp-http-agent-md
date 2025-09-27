@@ -171,7 +171,7 @@ async function resolveAttachmentFromFileId(userId, projectId, fileId) {
 
 export async function runScratchpadSubagent(
   userId,
-  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_path, filePath, file_id, fileId }
+  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_path, file_id }
 ) {
   // Validate required args
   const sid = String(scratchpad_id || "").trim();
@@ -280,14 +280,8 @@ export async function runScratchpadSubagent(
   const defaultSys = `You are a general problem-solving agent with access to ${toolNamesForPrompt}. Keep answers concise and accurate.`;
   const systemPrompt = String(sys_prompt || defaultSys);
 
-  const attachmentPathArg = [filePath, file_path]
-    .map((p) => (typeof p === 'string' ? p.trim() : ''))
-    .find(Boolean) || null;
-  const attachmentFileId = [fileId, file_id]
-    .map((p) => (typeof p === 'string' ? p.trim() : ''))
-    .find(Boolean) || null;
-
-  let attachmentPath = attachmentPathArg;
+  let attachmentPath = typeof file_path === 'string' ? file_path.trim() : null;
+  const attachmentFileId = typeof file_id === 'string' ? file_id.trim() : null;
   let attachmentMeta = null;
   if (!attachmentPath && attachmentFileId) {
     try {

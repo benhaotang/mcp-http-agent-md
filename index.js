@@ -588,9 +588,7 @@ function buildMcpServer(userId, userName) {
             sys_prompt: { type: 'string' , description: 'Default: You are a general problem-solving agent with access to tool_list. Keep answers concise and accurate.'},
             tool: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] },
             file_path: { type: 'string', description: 'Absolute path to a local file to attach (bypasses file_id lookup).' },
-            file_id: { type: 'string', description: 'Project file_id (see list_file). Server resolves to disk path securely.' },
-            filePath: { type: 'string', description: 'Alias for file_path.' },
-            fileId: { type: 'string', description: 'Alias for file_id.' }
+            file_id: { type: 'string', description: 'Project file_id (see list_file). Server resolves to disk path securely.' }
           },
           required: ['project_id','scratchpad_id','task_id','prompt']
         }
@@ -1214,7 +1212,7 @@ function buildMcpServer(userId, userName) {
         }
       }
       case 'scratchpad_subagent': {
-        const { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_id, fileId, file_path, filePath } = args || {};
+        const { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_id, file_path } = args || {};
         try {
           const externalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false';
           if (!externalAi) {
@@ -1228,9 +1226,7 @@ function buildMcpServer(userId, userName) {
             sys_prompt,
             tool,
             file_id,
-            fileId,
             file_path,
-            filePath,
           });
           return okText(JSON.stringify(result));
         } catch (err) {

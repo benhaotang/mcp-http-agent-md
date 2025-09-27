@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
 import crypto from 'crypto';
+import { fileTypeFromBuffer } from 'file-type';
 import { summarizeFile as extSummarizeFile } from './ext_ai/ext_ai.js';
 
 import {
@@ -36,6 +37,21 @@ const ALLOWED_EXTENSIONS = new Set(['.pdf', '.md', '.txt']);
 function validateFileExtension(filename) {
   const ext = path.extname(filename || '').toLowerCase();
   return { ok: ALLOWED_EXTENSIONS.has(ext), ext };
+}
+
+function isLikelyUtf8Text(buf) {
+  if (!buf || buf.length === 0) return false;
+  // hard fail on NUL bytes
+  for (let i = 0; i < buf.length; i++) { if (buf[i] === 0x00) return false; }
+  const sample = buf.length > 65536 ? buf.subarray(0, 65536) : buf;
+  let nonPrintable = 0;
+  for (let i = 0; i < sample.length; i++) {
+    const b = sample[i];
+    if (b === 0x09 || b === 0x0a || b === 0x0d) continue; // tab, LF, CR
+    if (b < 0x20 || b > 0x7e) nonPrintable++;
+  }
+  const ratio = nonPrintable / sample.length;
+  return ratio < 0.30; // tolerant of UTF-8 multibyte bytes
 }
 
 function generateFileId() {
@@ -114,16 +130,25 @@ export function buildProjectFilesRouter() {
         description = sanitizeDescription(req.body.description);
       }
 
-      const { ok, ext } = validateFileExtension(file.originalname || '');
-      if (!ok) {
-        return res.status(400).json({ error: 'unsupported_file_type', message: 'Only pdf, md, and txt uploads are allowed' });
+      // Detect type from content, not client-provided MIME
+      if (!file.buffer || file.buffer.length === 0) {
+        return res.status(400).json({ error: 'empty_file' });
       }
-      const mime = String(file.mimetype || '').toLowerCase();
-      if (ext === '.pdf' && !mime.includes('pdf')) {
-        return res.status(400).json({ error: 'unsupported_file_type', message: 'PDF uploads must be application/pdf' });
-      }
-      if ((ext === '.md' || ext === '.txt') && !(mime.includes('text') || mime === 'application/octet-stream')) {
-        return res.status(400).json({ error: 'unsupported_file_type', message: 'Markdown/Text uploads must be text based' });
+      let canonicalMime = null;
+      try {
+        const ft = await fileTypeFromBuffer(file.buffer);
+        if (ft && ft.mime === 'application/pdf') {
+          canonicalMime = 'application/pdf';
+        }
+      } catch {}
+      if (!canonicalMime) {
+        // Accept only if it looks like text; choose markdown vs plain by extension
+        if (!isLikelyUtf8Text(file.buffer)) {
+          return res.status(400).json({ error: 'unsupported_file_type', message: 'Only PDF or UTF-8 text/markdown files are allowed' });
+        }
+        const { ext } = validateFileExtension(file.originalname || '');
+        const isMd = ext === '.md' || String(file.originalname || '').toLowerCase().endsWith('.markdown');
+        canonicalMime = isMd ? 'text/markdown' : 'text/plain';
       }
 
       const fileId = generateFileId();
@@ -138,7 +163,7 @@ export function buildProjectFilesRouter() {
         const result = await dbReplaceProjectFile(access.owner_id, access.project_id, {
           originalName: file.originalname,
           fileId,
-          fileType: file.mimetype || 'application/octet-stream',
+          fileType: canonicalMime,
           userId: user.id,
           description,
         });

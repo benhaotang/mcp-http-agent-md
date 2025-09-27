@@ -222,6 +222,18 @@ curl -X POST http://localhost:3000/project/share \
 - POST `/project/share`: Share project `{ project_id, target_user_id, permission, revoke? }`. Permission: `ro` (read-only) or `rw` (read-write). Set `revoke: true` to remove access.
 - GET `/project/status?project_id=...`: Get project sharing status
 
+## Project Files
+
+Upload and manage documents (PDF, MD, TXT) within projects. Files are accessible to subagents and can be automatically summarized with AI.
+
+### Definition
+
+Base: `/project/files` (Bearer token auth)
+- POST `/project/files`: Upload file (≤20MB) with optional description
+- GET `/project/files?project_id=...`: List project files with metadata
+- DELETE `/project/files/:fileId?project_id=...`: Delete file
+- POST `/project/files/:fileId/summarize?project_id=...`: AI summarize file (requires `USE_EXTERNAL_AI=true`)
+
 ## MCP Endpoint
 
 - Base path: `POST /mcp` (Streamable HTTP, stateless JSON-RPC)
@@ -238,6 +250,12 @@ curl -X POST 'http://localhost:3000/mcp?apiKey=USER_API_KEY' \
 ![WebUI Kanban view](assets/UI.png)
 
 An optional lightweight management console (Next.js App Router) is bundled and served at `/ui`:
+
+- Kanban board for task management with drag & drop
+- AGENTS.md editor with markdown support
+- Files tab for document upload, management, and description (Can be generated via subagents).
+- Project sharing and collaboration
+- Commit history and version control
 
 Dev mode: included automatically when you run `pnpm dev` (hot reloading). Visit `/ui` once the server starts.
 
@@ -264,6 +282,8 @@ NODE_ENV=production pnpm start
 - get_agents_md_best_practices_and_examples: Returns best practices and examples from `example_agent_md.json`. Default returns only `the_art_of_writing_agents_md` (best-practices). Use `include='all'` to include all examples, or set `include` to a string/array to filter by usecase/title.
 - list_project_logs: List commit logs `{ name }` → `{ logs: [{ hash, message, modified_by, created_at }] }`. The `modified_by` field shows who made each commit.
 - revert_project: Revert to an earlier `hash` `{ name, hash }`. Shared participants can only revert to commits in their most recent consecutive sequence (to prevent discarding others' work). Trims history to that point (no branches).
+- list_file: List uploaded documents for a project `{ project_id }`. Returns each file's original filename, description, and file_id for reference.
+- read_project_file: Read a specific chunk of an uploaded project document `{ project_id, file_id, start?, length? }`. Returns UTF-8 text (PDFs parsed to text). Defaults to start=0, length=10000. (Only enabled when AI subagents are enabled)
 
 Scratchpad (ephemeral, per-session) tools:
 - scratchpad_initialize: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. `tasks` is up to 6 items `{ task_id, status: 'open'|'complete', task_info, scratchpad?, comments? }`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
@@ -275,7 +295,7 @@ Scratchpad (ephemeral, per-session) tools:
 - scratchpad_append_common_memory: Append to the scratchpad’s shared memory `{ name, scratchpad_id, append }` where `append` is a string or array of strings. Returns the updated scratchpad.
 
 External AI subagent (shown only when `USE_EXTERNAL_AI` is not `false`):
-- scratchpad_subagent: Start a subagent to work on a scratchpad task `{ name, scratchpad_id, task_id, prompt, sys_prompt?, tool? }`. Tools depend on provider (`AI_API_TYPE`). Canonical tools: `grounding` (search), `crawling` (web fetch), `code_execution` (run code). Auto‑appends `common_memory` to the prompt. May return early with `status: in_progress` and a `run_id`.
+- scratchpad_subagent: Start a subagent to work on a scratchpad task `{ name, scratchpad_id, task_id, prompt, sys_prompt?, tool?, file_id?, file_path? }`. Tools depend on provider (`AI_API_TYPE`). Canonical tools: `grounding` (search), `crawling` (web fetch), `code_execution` (run code). Auto‑appends `common_memory` to the prompt. Can attach documents via `file_id` (from list_file) or `file_path` (absolute path). May return early with `status: in_progress` and a `run_id`.
 - scratchpad_subagent_status: Check run status `{ name, run_id }`. Returns final status, or polls for up to ~25s when still running.
 
 Notes:

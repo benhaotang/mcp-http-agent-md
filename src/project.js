@@ -28,7 +28,7 @@ async function resolveUserFromRequest(req) {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB max to prevent large uploads for now
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max to prevent large uploads
 });
 
 const ALLOWED_EXTENSIONS = new Set(['.pdf', '.md', '.txt']);

@@ -110,7 +110,7 @@ async function selectProvider(apiType) {
   try {
     if (key === "google") {
       const mod = await import("./gemini.js");
-      return { key, infer: inferGemini };
+      return { key, infer: mod.infer };
     }
     if (key === "openai") {
       const mod = await import("./openai.js");

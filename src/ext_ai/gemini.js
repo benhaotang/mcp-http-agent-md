@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { loadFilePayload, buildFileContextBlock } from "./fileUtils.js";
 
 function buildGeminiTools(toolList) {
   const tools = [];
@@ -49,7 +50,7 @@ function addCitations(response) {
 }
 
 // Core inference for Gemini. Takes normalized inputs and returns a provider-agnostic result.
-export async function infer({ apiKey, model, systemPrompt, userPrompt, tools = [], timeoutSec = 120 }) {
+export async function infer({ apiKey, model, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath }) {
   const ai = new GoogleGenAI({ apiKey });
   const geminiTools = buildGeminiTools(tools);
 
@@ -59,10 +60,36 @@ export async function infer({ apiKey, model, systemPrompt, userPrompt, tools = [
       ? geminiTools
       : [{ googleSearch: {} }, { urlContext: {} }, { codeExecution: {} }],
   };
-  const contents = [
-    { role: "user", parts: [{ text: String(systemPrompt || "") }] },
-    { role: "user", parts: [{ text: String(userPrompt || "") }] },
-  ];
+  const contents = [];
+
+  const systemText = String(systemPrompt || "").trim();
+  if (systemText) {
+    contents.push({ role: "user", parts: [{ text: systemText }] });
+  }
+
+  const rawUserPrompt = String(userPrompt ?? "");
+  const safeUserPrompt = rawUserPrompt.trim() ? rawUserPrompt : "Prompt missing?";
+  const userParts = [{ text: safeUserPrompt }];
+
+  let attachment = null;
+  if (filePath) {
+    attachment = await loadFilePayload(filePath);
+    if (attachment?.kind === "pdf" && attachment?.base64) {
+      userParts.push({
+        inlineData: {
+          mimeType: attachment.mimeType,
+          data: attachment.base64,
+        },
+      });
+    }
+
+    const contextBlock = buildFileContextBlock(attachment);
+    if (contextBlock) {
+      userParts.push({ text: `\n\n${contextBlock}` });
+    }
+  }
+
+  contents.push({ role: "user", parts: userParts });
 
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   const hardTimer = setTimeout(() => {

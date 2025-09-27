@@ -209,6 +209,7 @@ Endpoints:
   - Returns `{ project_id, permission, files: [{ file_id, original_name, file_type, description, uploaded_by, created_at, updated_at }] }`.
 - `DELETE /project/files/:fileId?project_id=...`
   - Removes metadata and the stored binary when the caller has write access; returns `404` if missing.
+- External AI providers can now ingest uploaded `.pdf`, `.md`, and `.txt` documents when a `filePath` is supplied via the scratchpad tooling. Gemini and OpenAI send PDFs as native file attachments; other providers receive the extracted text appended to the prompt. Extraction is truncated based on `AI_ATTACHMENT_TEXT_LIMIT` (default 120 000 characters, set `-1` for no truncation).
 
 Sharing Data Model and Rules:
 - Project ownership stays with the original creator (row in `user_projects`).

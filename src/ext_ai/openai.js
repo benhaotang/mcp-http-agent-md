@@ -1,5 +1,6 @@
 // OpenAI provider using official SDK (Responses API)
 import OpenAI from 'openai';
+import { loadFilePayload, buildFileContextBlock } from './fileUtils.js';
 
 function shouldUseWebSearch(tools) {
   // Only enable web search when explicitly asked for grounding/search.
@@ -8,16 +9,39 @@ function shouldUseWebSearch(tools) {
   return s.has('grounding');
 }
 
-export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120 }) {
+export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath }) {
   const client = new OpenAI({ apiKey, baseURL: String(baseUrl || '').trim() || undefined });
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const hardTimer = setTimeout(() => { try { controller?.abort(); } catch {} }, Math.max(1000, Number(timeoutSec || 0) * 1000));
 
   const requestParams = {
     model,
-    input: userPrompt || 'Prompt missing?',
     instructions: String(systemPrompt || ''),
   };
+
+  const userContent = [{ type: 'input_text', text: String(userPrompt || '') || 'Prompt missing?' }];
+
+  if (filePath) {
+    const attachment = await loadFilePayload(filePath);
+    if (attachment?.kind === 'pdf' && attachment?.base64) {
+      userContent.unshift({
+        type: 'input_file',
+        filename: attachment.fileName,
+        file_data: `data:${attachment.mimeType};base64,${attachment.base64}`,
+      });
+    }
+    const contextBlock = buildFileContextBlock(attachment);
+    if (contextBlock) {
+      userContent.push({ type: 'input_text', text: `\n\n${contextBlock}` });
+    }
+  }
+
+  requestParams.input = [
+    {
+      role: 'user',
+      content: userContent,
+    },
+  ];
 
   if (shouldUseWebSearch(tools)) {
     requestParams.tools = [{ type: 'web_search_preview' }];

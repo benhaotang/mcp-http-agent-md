@@ -124,6 +124,7 @@ AI_API_TYPE=google   # google | openai | groq | compat | mcp
 AI_API_KEY=...   # required when enabled
 AI_MODEL="gemini-2.5-pro"  # optional; default depends on provider
 AI_TIMEOUT=120              # optional
+AI_ATTACHMENT_TEXT_LIMIT=120000  # optional; -1 keeps full extracted text
 ```
 
 > [!NOTE]

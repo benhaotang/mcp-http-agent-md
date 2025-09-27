@@ -131,7 +131,7 @@ async function selectProvider(apiType) {
 
 export async function runScratchpadSubagent(
   userId,
-  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool }
+  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_path, filePath }
 ) {
   // Validate required args
   const sid = String(scratchpad_id || "").trim();
@@ -247,6 +247,10 @@ export async function runScratchpadSubagent(
   const defaultSys = `You are a general problem-solving agent with access to ${toolNamesForPrompt}. Keep answers concise and accurate.`;
   const systemPrompt = String(sys_prompt || defaultSys);
 
+  const attachmentPath = [filePath, file_path]
+    .map((p) => (typeof p === 'string' ? p.trim() : ''))
+    .find(Boolean) || null;
+
   const runWork = async () => {
     await dbSetSubagentRunStatus(userId, projectId, run_id, "in_progress");
     try {
@@ -258,6 +262,7 @@ export async function runScratchpadSubagent(
         userPrompt: finalPrompt,
         tools: providerKey === 'mcp' ? (mcpToolSelection || 'all') : chosenTools,
         timeoutSec: aiTimeoutSec,
+        filePath: attachmentPath,
       });
 
       const textOut = String(result?.text || "");

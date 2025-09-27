@@ -10,6 +10,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import fs from 'fs/promises';
 import path from 'path';
+import { loadFilePayload, buildFileContextBlock } from './fileUtils.js';
 
 async function loadMcpConfig() {
   try {
@@ -73,7 +74,7 @@ async function createMcpClientsFromConfig(conf) {
   return clients;
 }
 
-export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120 }) {
+export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, tools = [], timeoutSec = 120, filePath }) {
   // Prepare OpenAI-compatible provider
   const baseURL = String(baseUrl || '').trim() || 'https://api.openai.com/v1';
   const provider = createOpenAICompatible({ name: 'openai-compatible', apiKey, baseURL });
@@ -108,7 +109,21 @@ export async function infer({ apiKey, model, baseUrl, systemPrompt, userPrompt, 
   const hardTimer = setTimeout(() => { try { controller?.abort(); } catch {} }, Math.max(1000, Number(timeoutSec || 0) * 1000));
 
   try {
-    const prompt = (String(systemPrompt || '').trim() ? `${String(systemPrompt).trim()}\n\n` : '') + String(userPrompt || '');
+    const systemText = String(systemPrompt || '').trim();
+    let userText = String(userPrompt ?? '');
+    if (!userText.trim()) {
+      userText = 'Prompt missing?';
+    }
+
+    let prompt = (systemText ? `${systemText}\n\n` : '') + userText;
+
+    if (filePath) {
+      const attachment = await loadFilePayload(filePath);
+      const contextBlock = buildFileContextBlock(attachment);
+      if (contextBlock) {
+        prompt = `${prompt}\n\n<attached_file>\n\nFile attachment content:\n\n${contextBlock}\n\n</attached_file>`;
+      }
+    }
 
     // Determine requested server names from 'tools' param: 'all' or an array of server names
     let requestedServers = null; // null means 'all'

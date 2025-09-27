@@ -42,6 +42,7 @@
     "nanoid": "^5.1.5",
     "next": "^15.5.3",
     "openai": "^5.20.0",
+    "pdf-parse": "^1.1.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-hot-toast": "^2.6.0",

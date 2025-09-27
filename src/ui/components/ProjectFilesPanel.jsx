@@ -25,6 +25,7 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
   const inputRef = useRef(null);
   const [externalAi, setExternalAi] = useState(false);
   const [summarizingFiles, setSummarizingFiles] = useState(() => new Set());
+  const [processingFiles, setProcessingFiles] = useState(() => new Set());
 
   React.useEffect(() => {
     let mounted = true;
@@ -114,6 +115,37 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
       toast.error(`Upload failed: ${err.message || err}`);
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function processPdf(file, { force = false } = {}) {
+    try {
+      if (file.has_ocr && !force) {
+        const ok = window.confirm('This will overwrite the previous OCR result and re-run OCR. Continue?');
+        if (!ok) return;
+        force = true;
+      }
+      setProcessingFiles(prev => new Set(prev).add(file.file_id));
+      const res = await fetch(`/project/files/${encodeURIComponent(file.file_id)}/process?project_id=${encodeURIComponent(projectId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ force })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error || `HTTP ${res.status}`);
+      }
+      toast.success('OCR processed');
+      // Optimistic update to show OCRed state immediately
+      mutate(prev => {
+        if (!prev || !prev.files) return prev;
+        const next = { ...prev, files: prev.files.map(it => it.file_id === file.file_id ? { ...it, has_ocr: true } : it) };
+        return next;
+      }, false);
+    } catch (err) {
+      toast.error(`Process failed: ${err?.message || err}`);
+    } finally {
+      setProcessingFiles(prev => { const next = new Set(prev); next.delete(file.file_id); return next; });
     }
   }
 
@@ -255,11 +287,34 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
                               >{isSummarizing ? 'Processing…' : 'Summarize'}</button>
                             );
                           })()}
+                          {String(f.file_type || '').toLowerCase() === 'application/pdf' && (() => {
+                            const isProcessing = processingFiles.has(f.file_id);
+                            return (
+                              <button
+                                onClick={() => processPdf(f)}
+                                disabled={busy || isProcessing}
+                                title={f.has_ocr ? 'OCRed — click to re-run' : 'Run OCR'}
+                                style={{background:'var(--accent)',opacity:(busy||isProcessing)?0.6:1,color:'#fff',border:'1px solid var(--accent-hover)',padding:'0.35rem 0.75rem',borderRadius:6,marginRight:8,cursor:(busy||isProcessing)?'wait':'pointer'}}
+                              >{isProcessing ? 'Processing…' : (f.has_ocr ? 'OCRed' : 'OCR')}</button>
+                            );
+                          })()}
                           <button
                             onClick={() => handleDelete(f)}
                             disabled={busy}
-                            style={{background:'var(--danger)',color:'#fff',border:'1px solid var(--danger-border)',padding:'0.35rem 0.75rem',borderRadius:6,cursor:busy?'wait':'pointer'}}
-                          >{busy ? 'Deleting…' : 'Delete'}</button>
+                            className="icon-btn"
+                            title="Delete"
+                            aria-label="Delete file"
+                            style={{background:'transparent',border:'none',padding:0,marginLeft:4,cursor:busy?'wait':'pointer'}}
+                          >
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={busy? 'var(--muted)':'var(--danger-border)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="3 6 5 6 21 6"></polyline>
+                              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>
+                              <path d="M10 11v6"></path>
+                              <path d="M14 11v6"></path>
+                              <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path>
+                            </svg>
+                            <span className="sr-only">Delete</span>
+                          </button>
                         </td>
                       )}
                     </tr>

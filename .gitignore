@@ -7,6 +7,9 @@ pnpm-lock.yaml
 # data
 data/
 
+# Temp
+.pnpm-store/
+
 # secrets
 .env
 

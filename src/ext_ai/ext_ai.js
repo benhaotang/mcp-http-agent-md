@@ -4,6 +4,8 @@
 
 import fs from "fs/promises";
 import path from "path";
+import { execFile } from "child_process";
+import { promisify } from "util";
 
 import {
   getScratchpad as dbGetScratchpad,
@@ -62,6 +64,77 @@ function resolveApiType(val) {
   if (v === 'openai-compatible' || v === 'openai_compat' || v === 'openai_compatible' || v === 'compat' || v === 'openai_com') return 'openai_com';
   if (v === 'mcp') return 'mcp';
   return v || 'google';
+}
+
+const pexecFile = promisify(execFile);
+
+function parsePagesSpec(spec) {
+  const s = String(spec || '').trim();
+  if (!s) return [];
+  const wanted = new Set();
+  for (const part of s.split(/\s*,\s*/)) {
+    if (!part) continue;
+    const m = part.match(/^(\d+)-(\d+)$/);
+    if (m) {
+      const a = parseInt(m[1], 10), b = parseInt(m[2], 10);
+      const lo = Math.min(a, b), hi = Math.max(a, b);
+      for (let k = lo; k <= hi; k++) if (k > 0) wanted.add(k);
+    } else {
+      const n = parseInt(part, 10);
+      if (Number.isFinite(n) && n > 0) wanted.add(n);
+    }
+  }
+  return Array.from(wanted).sort((a, b) => a - b);
+}
+
+async function buildSubsetPdf(originalPath, pagesSpec) {
+  // Requires poppler-utils (pdfseparate, pdfunite) available on PATH
+  const pages = parsePagesSpec(pagesSpec);
+  if (!pages.length) throw new Error('invalid_pages_spec');
+  const dir = await fs.mkdtemp(path.join(process.cwd(), '.tmp-subpdf-'));
+  const tmpBase = path.join(dir, 'page-%d.pdf');
+  try {
+    // Extract each requested page individually; pdfseparate supports -f/-l for ranges,
+    // but we run per page to be explicit about order and selection.
+    const outFiles = [];
+    for (const p of pages) {
+      const singleOut = path.join(dir, `page-${p}.pdf`);
+      await pexecFile('pdfseparate', ['-f', String(p), '-l', String(p), originalPath, singleOut]);
+      outFiles.push(singleOut);
+    }
+    const subsetPath = path.join(dir, 'subset.pdf');
+    await pexecFile('pdfunite', [...outFiles, subsetPath]);
+    return { subsetPath, cleanupDir: dir };
+  } catch (err) {
+    try { await fs.rm(dir, { recursive: true, force: true }); } catch {}
+    const msg = err?.stderr ? String(err.stderr) : String(err?.message || err);
+    throw new Error(`subset_pdf_failed:${msg}`);
+  }
+}
+
+async function buildSelectedPagesMarkdown(originalPath, pagesSpec) {
+  const pages = parsePagesSpec(pagesSpec);
+  if (!pages.length) throw new Error('invalid_pages_spec');
+  const sidecarPath = `${originalPath}.ocr.json`;
+  const raw = await fs.readFile(sidecarPath, 'utf-8');
+  const j = JSON.parse(raw);
+  const sidePages = Array.isArray(j?.pages) ? j.pages : [];
+  const byIndex = new Map();
+  for (const p of sidePages) {
+    const idx = typeof p?.index === 'number' ? p.index : null;
+    if (idx != null) byIndex.set(idx, String(p?.markdown || ''));
+  }
+  const parts = ['# Selected Pages'];
+  for (const n of pages) {
+    const md = byIndex.get(n);
+    if (!md) continue;
+    parts.push(`\n\n## Page ${n}\n${md}`);
+  }
+  const content = parts.join('');
+  const dir = await fs.mkdtemp(path.join(process.cwd(), '.tmp-submd-'));
+  const mdPath = path.join(dir, 'selected-pages.md');
+  await fs.writeFile(mdPath, content, 'utf-8');
+  return { mdPath, cleanupDir: dir };
 }
 
 function defaultModelFor(provider) {
@@ -171,7 +244,7 @@ async function resolveAttachmentFromFileId(userId, projectId, fileId) {
 
 export async function runScratchpadSubagent(
   userId,
-  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_path, file_id }
+  { project_id, scratchpad_id, task_id, prompt, sys_prompt, tool, file_path, file_id, pages }
 ) {
   // Validate required args
   const sid = String(scratchpad_id || "").trim();
@@ -211,7 +284,7 @@ export async function runScratchpadSubagent(
   const requestedTools = canonicalizeTools(normalizeTools(tool));
 
   // Append common_memory to prompt if present
-  const finalPrompt = sp.common_memory && sp.common_memory.trim().length
+  let finalPrompt = sp.common_memory && sp.common_memory.trim().length
     ? `${userPrompt}\n\nContext (scratchpad common_memory):\n${sp.common_memory}`
     : userPrompt;
 
@@ -300,9 +373,45 @@ export async function runScratchpadSubagent(
     }
   }
 
+  const pagesSpec = typeof pages === 'string' && pages.trim() ? pages.trim() : null;
+
   const runWork = async () => {
     await dbSetSubagentRunStatus(userId, projectId, run_id, "in_progress");
     try {
+      // Decide whether page selection is allowed and how to apply it.
+      let useSubsetPdfPath = null;
+      let subsetTmpDir = null;
+      let useSelectedMdPath = null;
+      let mdTmpDir = null;
+      const providerSupportsNativePages = providerKey === 'google' || providerKey === 'openai';
+      if (pagesSpec && attachmentPath) {
+        // Detect OCR sidecar
+        const sidecarPath = `${attachmentPath}.ocr.json`;
+        const hasSidecar = await fs.access(sidecarPath).then(() => true).catch(() => false);
+        const canUsePages = hasSidecar || providerSupportsNativePages;
+        if (!canUsePages) {
+          throw new Error('pages_not_supported_unprocessed_pdf');
+        }
+        if (hasSidecar) {
+          // Build a Markdown file containing only selected pages' text (with page headings)
+          try {
+            const { mdPath, cleanupDir } = await buildSelectedPagesMarkdown(attachmentPath, pagesSpec);
+            useSelectedMdPath = mdPath;
+            mdTmpDir = cleanupDir;
+          } catch (err) {
+            throw new Error(`page_selection_failed:${String(err?.message || err)}`);
+          }
+        } else {
+          // Build a subset PDF of only the requested pages. If this fails, error out.
+          try {
+            const { subsetPath, cleanupDir } = await buildSubsetPdf(attachmentPath, pagesSpec);
+            useSubsetPdfPath = subsetPath;
+            subsetTmpDir = cleanupDir;
+          } catch (err) {
+            throw new Error(`page_selection_failed:${String(err?.message || err)}`);
+          }
+        }
+      }
       const result = await infer({
         apiKey,
         model,
@@ -311,7 +420,7 @@ export async function runScratchpadSubagent(
         userPrompt: finalPrompt,
         tools: providerKey === 'mcp' ? (mcpToolSelection || 'all') : chosenTools,
         timeoutSec: aiTimeoutSec,
-        filePath: attachmentPath,
+        filePath: useSelectedMdPath || useSubsetPdfPath || attachmentPath,
         fileMeta: attachmentMeta,
       });
 
@@ -364,9 +473,15 @@ export async function runScratchpadSubagent(
       await dbUpdateScratchpadTasks(userId, projectId, sid, [
         { task_id: tid, scratchpad: newScratchpad, comments: newComments },
       ]);
+      // Cleanup temporary subset PDF directory if created
+      if (subsetTmpDir) { try { await fs.rm(subsetTmpDir, { recursive: true, force: true }); } catch {} }
+      if (mdTmpDir) { try { await fs.rm(mdTmpDir, { recursive: true, force: true }); } catch {} }
       await dbSetSubagentRunStatus(userId, projectId, run_id, "success");
       return { run_id, status: "success" };
     } catch (err) {
+      // Best-effort cleanup
+      try { if (typeof subsetTmpDir === 'string' && subsetTmpDir) { await fs.rm(subsetTmpDir, { recursive: true, force: true }); } } catch {}
+      try { if (typeof mdTmpDir === 'string' && mdTmpDir) { await fs.rm(mdTmpDir, { recursive: true, force: true }); } } catch {}
       await dbSetSubagentRunStatus(userId, projectId, run_id, "failure");
       return {
         run_id,

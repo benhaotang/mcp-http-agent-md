@@ -238,7 +238,17 @@ Endpoints:
   - Returns `{ project_id, permission, files: [{ file_id, original_name, file_type, description, uploaded_by, created_at, updated_at }] }`.
 - `DELETE /project/files/:fileId?project_id=...`
   - Removes metadata and the stored binary when the caller has write access; returns `404` if missing.
+- `POST /project/files/:fileId/process?project_id=...`
+  - (Owner/RW) Kicks off OCR generation for a specific PDF. Accepts `force=true` to regenerate even when a sidecar already exists.
+- `POST /project/files/process-all?project_id=...`
+  - (Owner/RW) Batch process every PDF in the project directory. Optional `force=true` rewrites existing sidecars.
 - External AI providers can now ingest uploaded `.pdf`, `.md`, and `.txt` documents when a `file_path` is supplied via the scratchpad tooling. Gemini and OpenAI send PDFs as native file attachments; other providers receive the extracted text appended to the prompt. Extraction is truncated based on `AI_ATTACHMENT_TEXT_LIMIT` (default 120 000 characters, set `-1` for no truncation).
+
+PDF OCR details:
+- When `MISTRAL_AI_API`/`MISTRAL_API_KEY` or `USE_LOCAL_AI_FOR_DOC_UNDERSTANDING=true` is configured, PDF uploads automatically queue OCR in the background. The binary stays untouched; the extracted Markdown is stored beside the file at `data/<project_id>/<file_id>.ocr.json`.
+- Mistral responses are stored verbatim (`{ "pages": [...] }`). Local OCR normalizes into the same shape by joining per-page Markdown.
+- `loadFilePayload` prefers OCR text when present, so text-only models get processed Markdown while providers capable of consuming PDFs still receive the original attachment.
+- Local OCR depends on `pdftoppm` (poppler-utils) being available on `PATH` to render PDF pages to PNG before calling the vision model.
 
 Sharing Data Model and Rules:
 - Project ownership stays with the original creator (row in `user_projects`).

@@ -51,6 +51,10 @@ import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
 import { buildProjectsRouter } from './src/share.js';
 import { buildProjectFilesRouter } from './src/project.js';
 import { loadFilePayload } from './src/ext_ai/fileUtils.js';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdfParseModule = require('pdf-parse');
+const pdfParse = typeof pdfParseModule === 'function' ? pdfParseModule : (pdfParseModule?.default || null);
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -567,7 +571,7 @@ function buildMcpServer(userId, userName) {
       },
       {
         name: 'list_file',
-        description: 'List uploaded documents for a project. Returns each file\'s original filename, description, and file_id so you can reference them when attaching to tools.',
+        description: 'List uploaded documents for a project. Returns each file\'s original filename, description, file_id, and PDF processing info (processed, total_pages).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -578,7 +582,7 @@ function buildMcpServer(userId, userName) {
       },
       {
         name: 'scratchpad_subagent',
-        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: project_id, scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"), file_path (absolute path) or file_id (from list_file) to attach a document. ${toolsSentence}${mcpToolsHint} The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
+        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: project_id, scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"), file_path (absolute path) or file_id (from list_file) to attach a document. ${toolsSentence}${mcpToolsHint} Optional 'pages' (e.g., "1-3,5,9"): only allowed when the PDF is processed=true in list_file (OCRed or native-pdf-capable provider). When provided, the server assembles either a Markdown excerpt (from OCR pages) or a new PDF (subset of pages) and attaches it. If processed=false, the call fails with pages_not_supported_unprocessed_pdf. The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -589,7 +593,8 @@ function buildMcpServer(userId, userName) {
             sys_prompt: { type: 'string' , description: 'Default: You are a general problem-solving agent with access to tool_list. Keep answers concise and accurate.'},
             tool: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] },
             file_path: { type: 'string', description: 'Absolute path to a local file to attach (bypasses file_id lookup).' },
-            file_id: { type: 'string', description: 'Project file_id (see list_file). Server resolves to disk path securely.' }
+            file_id: { type: 'string', description: 'Project file_id (see list_file). Server resolves to disk path securely.' },
+            pages: { type: 'string', description: 'Optional page selection for PDFs (e.g., "1-3,5,9"). Only allowed when list_file marks the PDF as processed=true.' }
           },
           required: ['project_id','scratchpad_id','task_id','prompt']
         }
@@ -885,11 +890,57 @@ function buildMcpServer(userId, userName) {
             return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
           }
           const rows = await dbListProjectFiles(acc.owner_id, acc.project_id);
-          const files = rows.map((row) => ({
-            file_id: row.file_id,
-            filename: row.original_name,
-            description: row.description || null,
-          }));
+          const baseDir = path.join(getDataDir(), acc.project_id);
+          const providerMeta = getProviderMeta();
+          const canNativePdfPages = providerMeta?.key === 'google' || providerMeta?.key === 'openai';
+
+          async function getPdfPagesCount(fileId) {
+            const p = path.join(baseDir, String(fileId));
+            try {
+              const buf = await fsp.readFile(p);
+              if (pdfParse) {
+                const parsed = await pdfParse(buf);
+                if (typeof parsed?.numpages === 'number' && parsed.numpages > 0) return parsed.numpages;
+              }
+            } catch {}
+            return null;
+          }
+
+          const files = [];
+          for (const row of rows) {
+            const isPdf = String(row.file_type || '').toLowerCase() === 'application/pdf';
+            let processed = false;
+            let total_pages = 'unknown';
+            let desc = row.description || null;
+            if (isPdf) {
+              const sidecar = path.join(baseDir, `${row.file_id}.ocr.json`);
+              let sidecarPages = null;
+              try {
+                const raw = await fsp.readFile(sidecar, 'utf-8');
+                const j = JSON.parse(raw);
+                if (Array.isArray(j?.pages)) sidecarPages = j.pages.length;
+              } catch {}
+              if (sidecarPages != null) {
+                processed = true;
+                total_pages = sidecarPages;
+              } else if (canNativePdfPages) {
+                const n = await getPdfPagesCount(row.file_id);
+                if (n != null) {
+                  processed = true;
+                  total_pages = n;
+                }
+              }
+              const pagesLabel = processed && typeof total_pages === 'number' ? `Pages: 1-${total_pages}` : 'Pages: unknown';
+              desc = (desc && desc.trim()) ? `${desc} (${pagesLabel})` : pagesLabel;
+            }
+            files.push({
+              file_id: row.file_id,
+              filename: row.original_name,
+              description: desc,
+              processed: isPdf ? processed : undefined,
+              total_pages: isPdf ? total_pages : undefined,
+            });
+          }
           return okText(JSON.stringify({ files }));
         } catch (err) {
           const msg = String(err?.message || err || 'list files failed');

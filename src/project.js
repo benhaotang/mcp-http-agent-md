@@ -5,6 +5,8 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import { fileTypeFromBuffer } from 'file-type';
 import { summarizeFile as extSummarizeFile } from './ext_ai/ext_ai.js';
+import { parseBoolean } from './env.js';
+import { processPdfForProjectFile, processAllProjectPdfs } from './ext_ai/pdfProcessor.js';
 
 import {
   getUserByApiKey,
@@ -78,6 +80,21 @@ function sanitizeDescription(input) {
   return str.length > limit ? str.slice(0, limit) : str;
 }
 
+function queuePdfProcessing(projectId, fileId, { force = false, source = 'upload' } = {}) {
+  setImmediate(() => {
+    processPdfForProjectFile(projectId, fileId, { force })
+      .then((result) => {
+        if (!result || result.status === 'disabled') return;
+        if (result.status !== 'ok' && result.status !== 'skipped') {
+          console.warn(`PDF processing (${source}) status=${result.status} for ${projectId}/${fileId}:`, result.reason || result.error || 'unknown');
+        }
+      })
+      .catch((err) => {
+        console.error(`PDF processing (${source}) failed for ${projectId}/${fileId}:`, err?.message || err);
+      });
+  });
+}
+
 export function buildProjectFilesRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '1mb' }));
@@ -93,10 +110,20 @@ export function buildProjectFilesRouter() {
       const access = await resolveProjectAccess(user.id, projectId);
       if (!access) return res.status(404).json({ error: 'project_not_found' });
       const rows = await dbListProjectFiles(access.owner_id, access.project_id);
+      const projectDir = path.join(getDataDir(), access.project_id);
+      const files = await Promise.all(rows.map(async (r) => {
+        const base = mapFileRow(r);
+        let has_ocr = false;
+        if (String(base.file_type || '').toLowerCase() === 'application/pdf') {
+          const sidecar = path.join(projectDir, `${base.file_id}.ocr.json`);
+          try { await fs.access(sidecar); has_ocr = true; } catch {}
+        }
+        return { ...base, has_ocr };
+      }));
       return res.json({
         project_id: access.project_id,
         permission: access.permission,
-        files: rows.map(mapFileRow),
+        files,
       });
     } catch (e) {
       console.error('files:list error', e);
@@ -177,6 +204,12 @@ export function buildProjectFilesRouter() {
       if (replacedFileId && replacedFileId !== fileId) {
         const oldPath = path.join(projectDir, replacedFileId);
         await fs.unlink(oldPath).catch(() => {});
+        const oldSidecar = `${oldPath}.ocr.json`;
+        await fs.unlink(oldSidecar).catch(() => {});
+      }
+
+      if (canonicalMime === 'application/pdf') {
+        queuePdfProcessing(access.project_id, fileId, { source: 'upload' });
       }
 
       return res.json({
@@ -215,6 +248,7 @@ export function buildProjectFilesRouter() {
       const projectDir = path.join(getDataDir(), access.project_id);
       const targetPath = path.join(projectDir, deleted.file_id);
       await fs.unlink(targetPath).catch(() => {});
+      await fs.unlink(`${targetPath}.ocr.json`).catch(() => {});
 
       return res.json({ ok: true, file_id: deleted.file_id });
     } catch (e) {
@@ -243,6 +277,66 @@ export function buildProjectFilesRouter() {
       const msg = e?.message || 'update_failed';
       const code = /project not found/i.test(msg) ? 404 : (/file_not_found/i.test(msg) ? 404 : 500);
       return res.status(code).json({ error: 'files_update_failed', message: msg });
+    }
+  });
+
+  router.post('/files/:fileId/process', async (req, res) => {
+    try {
+      const projectId = String(req.query.project_id || req.body?.project_id || '').trim();
+      if (!projectId) return res.status(400).json({ error: 'project_id_required' });
+      const user = await resolveUserFromRequest(req);
+      if (!user) return res.status(401).json({ error: 'apiKey required' });
+      const access = await resolveProjectAccess(user.id, projectId);
+      if (!access) return res.status(404).json({ error: 'project_not_found' });
+      if (access.permission === 'ro') return res.status(403).json({ error: 'read_only_project' });
+      const fileId = String(req.params.fileId || '').trim();
+      if (!fileId) return res.status(400).json({ error: 'file_id_required' });
+
+      const files = await dbListProjectFiles(access.owner_id, access.project_id);
+      const meta = files.find((f) => String(f.file_id) === fileId);
+      if (!meta) return res.status(404).json({ error: 'file_not_found' });
+      if (String(meta.file_type || '').toLowerCase() !== 'application/pdf') {
+        return res.status(400).json({ error: 'not_pdf' });
+      }
+
+      const force = parseBoolean(req.body?.force ?? req.query?.force, false);
+      const result = await processPdfForProjectFile(access.project_id, fileId, { force });
+      if (result?.status === 'ok') {
+        return res.json({ project_id: access.project_id, file_id: fileId, ...result });
+      }
+      if (result?.status === 'disabled') {
+        return res.status(400).json({ error: 'processing_disabled', details: result });
+      }
+      // Skipped or other statuses are still informative but not fatal
+      return res.json({ project_id: access.project_id, file_id: fileId, ...result });
+    } catch (e) {
+      console.error('files:process error', e);
+      return res.status(500).json({ error: 'files_process_failed', message: e?.message || 'Processing failed' });
+    }
+  });
+
+  router.post('/files/process-all', async (req, res) => {
+    try {
+      const projectId = String(req.query.project_id || req.body?.project_id || '').trim();
+      if (!projectId) return res.status(400).json({ error: 'project_id_required' });
+      const user = await resolveUserFromRequest(req);
+      if (!user) return res.status(401).json({ error: 'apiKey required' });
+      const access = await resolveProjectAccess(user.id, projectId);
+      if (!access) return res.status(404).json({ error: 'project_not_found' });
+      if (access.permission === 'ro') return res.status(403).json({ error: 'read_only_project' });
+
+      const force = parseBoolean(req.body?.force ?? req.query?.force, false);
+      const result = await processAllProjectPdfs(access.project_id, { force });
+      if (result?.status === 'ok') {
+        return res.json({ project_id: access.project_id, ...result });
+      }
+      if (result?.status === 'disabled') {
+        return res.status(400).json({ error: 'processing_disabled', details: result });
+      }
+      return res.json({ project_id: access.project_id, ...result });
+    } catch (e) {
+      console.error('files:processAll error', e);
+      return res.status(500).json({ error: 'files_process_all_failed', message: e?.message || 'Processing failed' });
     }
   });
 

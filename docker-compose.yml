@@ -1,0 +1,18 @@
+version: '3.9'
+
+services:
+  app:
+    build:
+      context: .
+    image: mcp-http-agent-md:local
+    restart: always
+    environment:
+      MAIN_API_KEY: change-me
+      HOST: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - "./data:/app/data"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

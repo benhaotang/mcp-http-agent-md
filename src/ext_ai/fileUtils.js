@@ -37,6 +37,33 @@ function truncateText(text) {
   return `${truncated}\n\n[Truncated to ${TEXT_LIMIT} characters]`;
 }
 
+
+async function readOcrSidecar(pdfPath) {
+  const dir = path.dirname(pdfPath);
+  const base = path.basename(pdfPath);
+  const sidecarPath = path.join(dir, `${base}.ocr.json`);
+  try {
+    const raw = await fs.readFile(sidecarPath, 'utf-8');
+    const data = JSON.parse(raw);
+    const pages = Array.isArray(data?.pages) ? data.pages : [];
+    const sections = [];
+    for (const page of pages) {
+      if (!page) continue;
+      const markdown = String(page.markdown ?? page.text ?? '').trim();
+      if (!markdown) continue;
+      const idx = typeof page.index === 'number' ? page.index : null;
+      sections.push(idx != null ? `<page_${idx}>\n\n${markdown}\n\n</page_${idx}>` : markdown);
+    }
+    if (!sections.length) return null;
+    return sections.join('\n\n');
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      console.warn(`[ext_ai] Failed to read OCR sidecar for '${base}':`, err?.message || err);
+    }
+    return null;
+  }
+}
+
 // opts: { mimeType?: string, originalName?: string, extOverride?: string }
 export async function loadFilePayload(filePath, opts = {}) {
   if (!filePath) return null;
@@ -65,6 +92,13 @@ export async function loadFilePayload(filePath, opts = {}) {
       text = '';
       console.warn(`[ext_ai] Failed to extract text from PDF '${fileName}':`, err?.message || err);
     }
+
+
+    const sidecarText = await readOcrSidecar(resolved);
+    if (sidecarText) {
+      text = truncateText(sidecarText);
+    }
+
     return { kind: 'pdf', ext: '.pdf', fileName, filePath: resolved, mimeType, base64, text };
   }
 

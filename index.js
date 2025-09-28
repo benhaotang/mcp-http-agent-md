@@ -47,10 +47,11 @@ import {
   getDataDir,
 } from './src/db.js';
 import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, listProjectLogs as vcListLogs, revertProject as vcRevertProject } from './src/version.js';
-import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
+import { runScratchpadSubagent, getProviderMeta, buildSelectedPagesMarkdown } from './src/ext_ai/ext_ai.js';
 import { buildProjectsRouter } from './src/share.js';
 import { buildProjectFilesRouter } from './src/project.js';
 import { loadFilePayload } from './src/ext_ai/fileUtils.js';
+const pdfParse = await import('pdf-parse').then(m => m.default || m);
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -546,14 +547,15 @@ function buildMcpServer(userId, userName) {
 
     const readProjectFileTool = {
       name: 'read_project_file',
-        description: 'Read a specific chunk of an uploaded project document. Provide file_id from list_file plus optional byte offset start and length (defaults to start=0, length=10000). Returns UTF-8 text (PDFs are parsed to text).',
+        description: 'Read a specific chunk of an uploaded project document. Provide file_id from list_file plus either (a) byte offset start and length (defaults: start=0, length=10000), or (b) pages (e.g., "1-3,5") for PDFs with processed status true. Do NOT supply start/length together with pages. Returns UTF-8 text (PDFs are parsed to text).',
       inputSchema: {
         type: 'object',
         properties: {
           project_id: { type: 'string' },
           file_id: { type: 'string' },
           start: { type: 'number', minimum: 0, description: 'Optional byte offset to begin reading. Defaults to 0.' },
-          length: { type: 'number', minimum: 1, description: 'Optional byte length to read. Defaults to 10000. Max 100000.' }
+          length: { type: 'number', minimum: 1, description: 'Optional byte length to read. Defaults to 10000. Max 100000.' },
+          pages: { type: 'string', description: 'Optional page selection for PDFs (e.g., "1-3,5"). Only allowed when PDF with processed=true.' }
         },
         required: ['project_id','file_id']
       }
@@ -567,7 +569,7 @@ function buildMcpServer(userId, userName) {
       },
       {
         name: 'list_file',
-        description: 'List uploaded documents for a project. Returns each file\'s original filename, description, and file_id so you can reference them when attaching to tools.',
+        description: 'List uploaded documents for a project. Returns each file\'s original filename, description, file_id, and PDF processing info (processed, total_pages). When page numbers are available (processed=true), the automatically generated descriptions and outlines include page markers using the format [p. N] or [pp. A–B]; otherwise page numbers are omitted.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -578,7 +580,7 @@ function buildMcpServer(userId, userName) {
       },
       {
         name: 'scratchpad_subagent',
-        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: project_id, scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"), file_path (absolute path) or file_id (from list_file) to attach a document. ${toolsSentence}${mcpToolsHint} The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
+        description: `Start a subagent (provider: ${meta.key}) to work on a scratchpad task. Required: project_id, scratchpad_id, task_id, prompt. Optional: sys_prompt, tool (array or "all"), file_path (absolute path) or file_id (from list_file) to attach a document. ${toolsSentence}${mcpToolsHint} Optional 'pages' (e.g., "1-3,5,9"): only allowed when the PDF is processed=true in list_file (OCRed or native-pdf-capable provider). When provided, the server assembles either a Markdown excerpt (from OCR pages) or a new PDF (subset of pages) and attaches it. If processed=false, the call fails with pages_not_supported_unprocessed_pdf. The server auto-appends the scratchpad's common_memory to the prompt when present. The subagent appends its answer to the task's scratchpad and logs any sources/code it used into comments. Note that the subagent's context is isolated: it can ONLY see common_memory without other project context; update common_memory if needed.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -589,7 +591,8 @@ function buildMcpServer(userId, userName) {
             sys_prompt: { type: 'string' , description: 'Default: You are a general problem-solving agent with access to tool_list. Keep answers concise and accurate.'},
             tool: { oneOf: [ { type: 'string' }, { type: 'array', items: { type: 'string' } } ] },
             file_path: { type: 'string', description: 'Absolute path to a local file to attach (bypasses file_id lookup).' },
-            file_id: { type: 'string', description: 'Project file_id (see list_file). Server resolves to disk path securely.' }
+            file_id: { type: 'string', description: 'Project file_id (see list_file). Server resolves to disk path securely.' },
+            pages: { type: 'string', description: 'Optional page selection for PDFs (e.g., "1-3,5,9"). Only allowed when list_file marks the PDF as processed=true.' }
           },
           required: ['project_id','scratchpad_id','task_id','prompt']
         }
@@ -885,11 +888,57 @@ function buildMcpServer(userId, userName) {
             return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
           }
           const rows = await dbListProjectFiles(acc.owner_id, acc.project_id);
-          const files = rows.map((row) => ({
-            file_id: row.file_id,
-            filename: row.original_name,
-            description: row.description || null,
-          }));
+          const baseDir = path.join(getDataDir(), acc.project_id);
+          const providerMeta = getProviderMeta();
+          const canNativePdfPages = providerMeta?.key === 'google' || providerMeta?.key === 'openai';
+
+          async function getPdfPagesCount(fileId) {
+            const p = path.join(baseDir, String(fileId));
+            try {
+              const buf = await fsp.readFile(p);
+              if (pdfParse) {
+                const parsed = await pdfParse(buf);
+                if (typeof parsed?.numpages === 'number' && parsed.numpages > 0) return parsed.numpages;
+              }
+            } catch {}
+            return null;
+          }
+
+          const files = [];
+          for (const row of rows) {
+            const isPdf = String(row.file_type || '').toLowerCase() === 'application/pdf';
+            let processed = false;
+            let total_pages = 'unknown';
+            let desc = row.description || null;
+            if (isPdf) {
+              const sidecar = path.join(baseDir, `${row.file_id}.ocr.json`);
+              let sidecarPages = null;
+              try {
+                const raw = await fsp.readFile(sidecar, 'utf-8');
+                const j = JSON.parse(raw);
+                if (Array.isArray(j?.pages)) sidecarPages = j.pages.length;
+              } catch {}
+              if (sidecarPages != null) {
+                processed = true;
+                total_pages = sidecarPages;
+              } else if (canNativePdfPages) {
+                const n = await getPdfPagesCount(row.file_id);
+                if (n != null) {
+                  processed = true;
+                  total_pages = n;
+                }
+              }
+              const pagesLabel = processed && typeof total_pages === 'number' ? `Pages: 1-${total_pages}` : 'Pages: unknown';
+              desc = (desc && desc.trim()) ? `${desc} (${pagesLabel})` : pagesLabel;
+            }
+            files.push({
+              file_id: row.file_id,
+              filename: row.original_name,
+              description: desc,
+              processed: isPdf ? processed : undefined,
+              total_pages: isPdf ? total_pages : undefined,
+            });
+          }
           return okText(JSON.stringify({ files }));
         } catch (err) {
           const msg = String(err?.message || err || 'list files failed');
@@ -897,7 +946,7 @@ function buildMcpServer(userId, userName) {
         }
       }
       case 'read_project_file': {
-        const { project_id, file_id, start, length } = args || {};
+        const { project_id, file_id, start, length, pages } = args || {};
         const pid = String(project_id || '').trim();
         const fid = String(file_id || '').trim();
         if (!pid) {
@@ -946,9 +995,35 @@ function buildMcpServer(userId, userName) {
           const fileName = String(meta.original_name || '');
           const isPdf = fileType.includes('pdf') || /\.pdf$/i.test(fileName);
 
+          // Validate mutually exclusive paging vs byte ranges
+          const hasPages = typeof pages === 'string' && pages.trim().length > 0;
+          const hasOffsets = (typeof start !== 'undefined') || (typeof length !== 'undefined');
+          if (hasPages && hasOffsets) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'Provide either start/length or pages, not both.' }));
+          }
+
           let content = '';
           let total = 0;
           if (isPdf) {
+            if (hasPages) {
+              // Require OCR sidecar in this no-subagent mode
+              try { await fsp.access(path.join(baseDir, `${fid}.ocr.json`)); } catch {
+                return okText(JSON.stringify({ error: 'pages_not_supported_unprocessed_pdf', message: 'Page selection requires it to be processed first.' }));
+              }
+              try {
+                const { mdPath, cleanupDir } = await buildSelectedPagesMarkdown(filePath, String(pages));
+                try {
+                  content = await fsp.readFile(mdPath, 'utf-8');
+                } finally {
+                  try { await fsp.rm(cleanupDir, { recursive: true, force: true }); } catch {}
+                }
+                if (!content) return okText(JSON.stringify({ error: 'invalid_pages_spec', message: 'No matching pages found or invalid spec.' }));
+                total = content.length;
+                return okText(JSON.stringify({ file_id: fid, filename: fileName, pages: String(pages), encoding: 'utf8', content, total_chars: total }));
+              } catch (e) {
+                return okText(JSON.stringify({ error: 'sidecar_read_failed', message: String(e?.message || e) }));
+              }
+            }
             const payload = await loadFilePayload(filePath, { mimeType: meta.file_type || '', originalName: fileName });
             const text = String(payload?.text || '');
             total = text.length;

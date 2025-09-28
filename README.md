@@ -224,7 +224,7 @@ curl -X POST http://localhost:3000/project/share \
 
 ## Project Files
 
-Upload and manage documents (PDF, MD, TXT) within projects. Files are accessible to subagents and can be automatically summarized with AI.
+Upload and manage documents (PDF, MD, TXT) within projects. Files are accessible to subagents and can be automatically summarized with AI. PDFs can be OCR processed via the UI Files tab with an "OCR" button.
 
 ### Definition
 
@@ -233,6 +233,15 @@ Base: `/project/files` (Bearer token auth)
 - GET `/project/files?project_id=...`: List project files with metadata
 - DELETE `/project/files/:fileId?project_id=...`: Delete file
 - POST `/project/files/:fileId/summarize?project_id=...`: AI summarize file (requires `USE_EXTERNAL_AI=true`)
+- POST `/project/files/:fileId/process?project_id=...`: Generate/update OCR sidecar for a single PDF (set `force=true` to regenerate)
+- POST `/project/files/process-all?project_id=...`: Batch-process every PDF in the project directory (optional `force=true`)
+
+### PDF OCR Sidecars
+
+- PDF uploads enqueue OCR automatically when either Mistral (`MISTRAL_AI_API`/`MISTRAL_API_KEY`) or the local model (`USE_LOCAL_AI_FOR_DOC_UNDERSTANDING=true`) is configured. Upload responses are immediate; processing runs in the background.
+- OCR output is stored alongside the binary as `data/<project_id>/<file_id>.ocr.json` using the provider’s native shape (`{ pages: [...] }`).
+- Summaries and external AI calls keep attaching the original PDF, but when a sidecar exists the extracted Markdown is also supplied so text-only providers have full context.
+- Local OCR requires `pdftoppm` (from poppler-utils) to be available in `PATH` so the PDF can be split into per-page PNGs.
 
 ## MCP Endpoint
 
@@ -283,7 +292,7 @@ NODE_ENV=production pnpm start
 - list_project_logs: List commit logs `{ name }` → `{ logs: [{ hash, message, modified_by, created_at }] }`. The `modified_by` field shows who made each commit.
 - revert_project: Revert to an earlier `hash` `{ name, hash }`. Shared participants can only revert to commits in their most recent consecutive sequence (to prevent discarding others' work). Trims history to that point (no branches).
 - list_file: List uploaded documents for a project `{ project_id }`. Returns each file's original filename, description, and file_id for reference.
-- read_project_file: Read a specific chunk of an uploaded project document `{ project_id, file_id, start?, length? }`. Returns UTF-8 text (PDFs parsed to text). Defaults to start=0, length=10000. (Only enabled when AI subagents are enabled)
+- read_project_file: Read a specific chunk of an uploaded project document `{ project_id, file_id, start?, length?, pages? }`. Returns UTF-8 text (PDFs parsed to text). Defaults to start=0, length=10000. For processed PDFs, use pages="1-3,5" instead of start/length. (Only enabled when USE_EXTERNAL_AI=false), the agent can only choose to use either read by chunk or by page. 
 
 Scratchpad (ephemeral, per-session) tools:
 - scratchpad_initialize: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. `tasks` is up to 6 items `{ task_id, status: 'open'|'complete', task_info, scratchpad?, comments? }`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.

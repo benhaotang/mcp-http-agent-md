@@ -2,7 +2,8 @@ FROM node:20-alpine AS base
 
 
 # Enable corepack so pnpm works from packageManager field
-RUN corepack enable
+RUN corepack enable \
+  && apk add --no-cache poppler-utils
 
 WORKDIR /app
 

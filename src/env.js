@@ -67,3 +67,14 @@ export function loadEnvFromDotenv() {
   }
 }
 
+// Parse flexible boolean-ish values from env/inputs
+// Accepts: true/false, 1/0, yes/no, on/off (case-insensitive). Falls back when unknown.
+export function parseBoolean(val, fallback = false) {
+  if (val == null) return fallback;
+  if (typeof val === 'boolean') return val;
+  const s = String(val).toLowerCase().trim();
+  if (!s) return fallback;
+  if (s === '1' || s === 'true' || s === 'yes' || s === 'on') return true;
+  if (s === '0' || s === 'false' || s === 'no' || s === 'off') return false;
+  return fallback;
+}

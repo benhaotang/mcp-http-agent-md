@@ -37,6 +37,7 @@ function truncateText(text) {
   return `${truncated}\n\n[Truncated to ${TEXT_LIMIT} characters]`;
 }
 
+
 async function readOcrSidecar(pdfPath) {
   const dir = path.dirname(pdfPath);
   const base = path.basename(pdfPath);
@@ -91,6 +92,7 @@ export async function loadFilePayload(filePath, opts = {}) {
       text = '';
       console.warn(`[ext_ai] Failed to extract text from PDF '${fileName}':`, err?.message || err);
     }
+
 
     const sidecarText = await readOcrSidecar(resolved);
     if (sidecarText) {

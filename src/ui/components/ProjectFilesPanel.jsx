@@ -149,6 +149,7 @@ export default function ProjectFilesPanel({ projectId, readOnly }) {
     }
   }
 
+
   function toggleExpanded(fileId) {
     setExpanded(prev => {
       const next = new Set(prev);

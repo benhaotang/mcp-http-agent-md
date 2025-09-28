@@ -51,6 +51,7 @@ import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
 import { buildProjectsRouter } from './src/share.js';
 import { buildProjectFilesRouter } from './src/project.js';
 import { loadFilePayload } from './src/ext_ai/fileUtils.js';
+
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const pdfParseModule = require('pdf-parse');

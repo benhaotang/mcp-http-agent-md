@@ -4,6 +4,7 @@
 
 import fs from "fs/promises";
 import path from "path";
+
 import { execFile } from "child_process";
 import { promisify } from "util";
 
@@ -372,6 +373,7 @@ export async function runScratchpadSubagent(
       };
     }
   }
+
 
   const pagesSpec = typeof pages === 'string' && pages.trim() ? pages.trim() : null;
 

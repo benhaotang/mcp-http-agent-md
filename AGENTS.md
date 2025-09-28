@@ -267,7 +267,6 @@ PDF OCR details:
 - `loadFilePayload` prefers OCR text when present, so text-only models get processed Markdown while providers capable of consuming PDFs still receive the original attachment.
 - When selected page ranges are used with MCP `scratchpad_subagent pages=...`, providers receive either a subset PDF (Gemini/OpenAI) or a temporary Markdown excerpt derived from the sidecar (only “index + markdown”; JSON/images are never sent to models). Temporary files are cleaned up automatically after the run.
 - Local OCR depends on `pdftoppm` (poppler-utils) being available on `PATH` to render PDF pages to PNG before calling the vision model.
-
 Sharing Data Model and Rules:
 - Project ownership stays with the original creator (row in `user_projects`).
 - Shares are stored as two JSON arrays on the project row:

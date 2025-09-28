@@ -571,7 +571,7 @@ function buildMcpServer(userId, userName) {
       },
       {
         name: 'list_file',
-        description: 'List uploaded documents for a project. Returns each file\'s original filename, description, file_id, and PDF processing info (processed, total_pages).',
+        description: 'List uploaded documents for a project. Returns each file\'s original filename, description, file_id, and PDF processing info (processed, total_pages). When page numbers are available (processed=true), the automatically generated descriptions and outlines include page markers using the format [p. N] or [pp. A–B]; otherwise page numbers are omitted.',
         inputSchema: {
           type: 'object',
           properties: {

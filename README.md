@@ -224,7 +224,7 @@ curl -X POST http://localhost:3000/project/share \
 
 ## Project Files
 
-Upload and manage documents (PDF, MD, TXT) within projects. Files are accessible to subagents and can be automatically summarized with AI.
+Upload and manage documents (PDF, MD, TXT) within projects. Files are accessible to subagents and can be automatically summarized with AI. PDFs can be OCR processed via the UI Files tab with an "OCR" button.
 
 ### Definition
 

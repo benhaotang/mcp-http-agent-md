@@ -22,6 +22,23 @@ Progress tracking uses a structured tasks model stored in SQLite (via `sql.js`, 
   `fileUtils.loadFilePayload` respects the supplied MIME (PDF vs text) and uses `AI_ATTACHMENT_TEXT_LIMIT` for truncation.
 - **UI hinting** — The file description textbox placeholder appends “Leave blank to auto-summarize with AI on upload.” when external AI is enabled. The old MCP scratchpad-based path was removed.
 - **Public env endpoint** — `/env/public` exposes toggles such as `USE_EXTERNAL_AI` for the UI so it can hide/show AI affordances without probing MCP.
+ - **PDF OCR pipeline + page-aware flows**
+   - New sidecar format stored at `data/<project_id>/<file_id>.ocr.json` with `{ pages: [{ index, markdown }, ...] }`. Mistral responses are saved verbatim; local OCR normalizes to this shape (images are ignored everywhere).
+   - UI Files tab now has an “OCR” button for PDFs. Shows “OCRed” when a sidecar exists and prompts before re-running (overwrites sidecar).
+   - New REST endpoints:
+     - `POST /project/files/:fileId/process?project_id=...` — OCR a single PDF (`force=true` to overwrite sidecar).
+     - `POST /project/files/process-all?project_id=...` — OCR all PDFs in a project (`force=true` to overwrite).
+   - MCP `list_file` now includes per-PDF `processed` and `total_pages` fields, and augments returned `description` with a “Pages: …” hint:
+     - `processed: true` when a sidecar exists or the active provider supports native PDF paging (Gemini/OpenAI).
+     - `total_pages`: counts sidecar pages or uses `pdf-parse` when provider is page‑aware; otherwise `"unknown"`.
+   - MCP `scratchpad_subagent` accepts `pages: "1-3,5,9"` for PDFs:
+     - If `processed=true`: the server attaches only the requested content
+       - Sidecar present → attaches a temporary Markdown excerpt with “## Page N” + markdown for selected pages
+       - No sidecar but page‑aware provider → attaches a temporary subset PDF built from those pages
+     - If `processed=false`: call fails with `pages_not_supported_unprocessed_pdf`.
+   - Summaries (`/project/files/:fileId/summarize`) are page‑aware only when safe:
+     - If sidecar exists or provider supports native paging → the prompt requires page markers and “verse” snippets per outline item
+     - Otherwise → classic 3‑section prompt with no mention of pages to avoid hallucinations
 
 ## UI Management Console (/ui)
 
@@ -235,7 +252,7 @@ Endpoints:
 - `POST /project/files`
   - Multipart form accepting `project_id`, a single `file` (`.pdf|.md|.txt`, ≤20 MB), and optional `description` (stored verbatim, UI truncates to 200 chars by default with expand). Uploading the same original filename replaces the previous version and deletes the old blob.
 - `GET /project/files?project_id=...`
-  - Returns `{ project_id, permission, files: [{ file_id, original_name, file_type, description, uploaded_by, created_at, updated_at }] }`.
+  - Returns `{ project_id, permission, files: [{ file_id, original_name, file_type, description, has_ocr?, uploaded_by, created_at, updated_at }] }` where `has_ocr` is present for PDFs.
 - `DELETE /project/files/:fileId?project_id=...`
   - Removes metadata and the stored binary when the caller has write access; returns `404` if missing.
 - `POST /project/files/:fileId/process?project_id=...`
@@ -248,6 +265,7 @@ PDF OCR details:
 - When `MISTRAL_AI_API`/`MISTRAL_API_KEY` or `USE_LOCAL_AI_FOR_DOC_UNDERSTANDING=true` is configured, PDF uploads automatically queue OCR in the background. The binary stays untouched; the extracted Markdown is stored beside the file at `data/<project_id>/<file_id>.ocr.json`.
 - Mistral responses are stored verbatim (`{ "pages": [...] }`). Local OCR normalizes into the same shape by joining per-page Markdown.
 - `loadFilePayload` prefers OCR text when present, so text-only models get processed Markdown while providers capable of consuming PDFs still receive the original attachment.
+- When selected page ranges are used with MCP `scratchpad_subagent pages=...`, providers receive either a subset PDF (Gemini/OpenAI) or a temporary Markdown excerpt derived from the sidecar (only “index + markdown”; JSON/images are never sent to models). Temporary files are cleaned up automatically after the run.
 - Local OCR depends on `pdftoppm` (poppler-utils) being available on `PATH` to render PDF pages to PNG before calling the vision model.
 
 Sharing Data Model and Rules:

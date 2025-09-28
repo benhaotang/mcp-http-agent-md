@@ -69,7 +69,7 @@ function resolveApiType(val) {
 
 const pexecFile = promisify(execFile);
 
-function parsePagesSpec(spec) {
+export function parsePagesSpec(spec) {
   const s = String(spec || '').trim();
   if (!s) return [];
   const wanted = new Set();
@@ -113,7 +113,7 @@ async function buildSubsetPdf(originalPath, pagesSpec) {
   }
 }
 
-async function buildSelectedPagesMarkdown(originalPath, pagesSpec) {
+export async function buildSelectedPagesMarkdown(originalPath, pagesSpec) {
   const pages = parsePagesSpec(pagesSpec);
   if (!pages.length) throw new Error('invalid_pages_spec');
   const sidecarPath = `${originalPath}.ocr.json`;

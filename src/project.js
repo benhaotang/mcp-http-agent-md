@@ -5,6 +5,7 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import { fileTypeFromBuffer } from 'file-type';
 import { summarizeFile as extSummarizeFile } from './ext_ai/ext_ai.js';
+import { parseBoolean } from './env.js';
 import { processPdfForProjectFile, processAllProjectPdfs } from './ext_ai/pdfProcessor.js';
 
 import {
@@ -77,16 +78,6 @@ function sanitizeDescription(input) {
   if (!str) return null;
   const limit = 4000;
   return str.length > limit ? str.slice(0, limit) : str;
-}
-
-function parseBooleanFlag(val, fallback = false) {
-  if (val == null) return fallback;
-  if (typeof val === 'boolean') return val;
-  const s = String(val).toLowerCase().trim();
-  if (!s) return fallback;
-  if (['1', 'true', 'yes', 'on'].includes(s)) return true;
-  if (['0', 'false', 'no', 'off'].includes(s)) return false;
-  return fallback;
 }
 
 function queuePdfProcessing(projectId, fileId, { force = false, source = 'upload' } = {}) {
@@ -308,7 +299,7 @@ export function buildProjectFilesRouter() {
         return res.status(400).json({ error: 'not_pdf' });
       }
 
-      const force = parseBooleanFlag(req.body?.force ?? req.query?.force, false);
+      const force = parseBoolean(req.body?.force ?? req.query?.force, false);
       const result = await processPdfForProjectFile(access.project_id, fileId, { force });
       if (result?.status === 'ok') {
         return res.json({ project_id: access.project_id, file_id: fileId, ...result });
@@ -334,7 +325,7 @@ export function buildProjectFilesRouter() {
       if (!access) return res.status(404).json({ error: 'project_not_found' });
       if (access.permission === 'ro') return res.status(403).json({ error: 'read_only_project' });
 
-      const force = parseBooleanFlag(req.body?.force ?? req.query?.force, false);
+      const force = parseBoolean(req.body?.force ?? req.query?.force, false);
       const result = await processAllProjectPdfs(access.project_id, { force });
       if (result?.status === 'ok') {
         return res.json({ project_id: access.project_id, ...result });

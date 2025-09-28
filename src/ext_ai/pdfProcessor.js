@@ -5,16 +5,9 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { Mistral } from '@mistralai/mistralai';
 import { getDataDir } from '../db.js';
+import { parseBoolean } from '../env.js';
 
 const pexecFile = promisify(execFile);
-
-function boolFromEnv(val, defaultBool = false) {
-  if (val == null) return defaultBool;
-  const s = String(val).toLowerCase().trim();
-  if (["1","true","yes","on"].includes(s)) return true;
-  if (["0","false","no","off"].includes(s)) return false;
-  return defaultBool;
-}
 
 function getSidecarPath(projectId, fileId) {
   const projectDir = path.join(getDataDir(), String(projectId));
@@ -136,7 +129,7 @@ export async function processPdfForProjectFile(projectId, fileId, { force = fals
     return { status: 'skipped', reason: 'exists', sidecar };
   }
 
-  const useLocal = boolFromEnv(process.env.USE_LOCAL_AI_FOR_DOC_UNDERSTANDING, false);
+  const useLocal = parseBoolean(process.env.USE_LOCAL_AI_FOR_DOC_UNDERSTANDING, false);
   const hasMistral = !!String(process.env.MISTRAL_AI_API || process.env.MISTRAL_API_KEY || '').trim();
 
   if (useLocal) {

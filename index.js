@@ -47,15 +47,11 @@ import {
   getDataDir,
 } from './src/db.js';
 import { onInitProject as vcOnInitProject, commitProject as vcCommitProject, listProjectLogs as vcListLogs, revertProject as vcRevertProject } from './src/version.js';
-import { runScratchpadSubagent, getProviderMeta } from './src/ext_ai/ext_ai.js';
+import { runScratchpadSubagent, getProviderMeta, buildSelectedPagesMarkdown } from './src/ext_ai/ext_ai.js';
 import { buildProjectsRouter } from './src/share.js';
 import { buildProjectFilesRouter } from './src/project.js';
 import { loadFilePayload } from './src/ext_ai/fileUtils.js';
-
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const pdfParseModule = require('pdf-parse');
-const pdfParse = typeof pdfParseModule === 'function' ? pdfParseModule : (pdfParseModule?.default || null);
+const pdfParse = await import('pdf-parse').then(m => m.default || m);
 
 // Utility: sanitize and validate project name (letters, digits, space, dot, underscore, hyphen)
 function validateProjectName(name) {
@@ -551,14 +547,15 @@ function buildMcpServer(userId, userName) {
 
     const readProjectFileTool = {
       name: 'read_project_file',
-        description: 'Read a specific chunk of an uploaded project document. Provide file_id from list_file plus optional byte offset start and length (defaults to start=0, length=10000). Returns UTF-8 text (PDFs are parsed to text).',
+        description: 'Read a specific chunk of an uploaded project document. Provide file_id from list_file plus either (a) byte offset start and length (defaults: start=0, length=10000), or (b) pages (e.g., "1-3,5") for PDFs with processed status true. Do NOT supply start/length together with pages. Returns UTF-8 text (PDFs are parsed to text).',
       inputSchema: {
         type: 'object',
         properties: {
           project_id: { type: 'string' },
           file_id: { type: 'string' },
           start: { type: 'number', minimum: 0, description: 'Optional byte offset to begin reading. Defaults to 0.' },
-          length: { type: 'number', minimum: 1, description: 'Optional byte length to read. Defaults to 10000. Max 100000.' }
+          length: { type: 'number', minimum: 1, description: 'Optional byte length to read. Defaults to 10000. Max 100000.' },
+          pages: { type: 'string', description: 'Optional page selection for PDFs (e.g., "1-3,5"). Only allowed when PDF with processed=true.' }
         },
         required: ['project_id','file_id']
       }
@@ -949,7 +946,7 @@ function buildMcpServer(userId, userName) {
         }
       }
       case 'read_project_file': {
-        const { project_id, file_id, start, length } = args || {};
+        const { project_id, file_id, start, length, pages } = args || {};
         const pid = String(project_id || '').trim();
         const fid = String(file_id || '').trim();
         if (!pid) {
@@ -998,9 +995,35 @@ function buildMcpServer(userId, userName) {
           const fileName = String(meta.original_name || '');
           const isPdf = fileType.includes('pdf') || /\.pdf$/i.test(fileName);
 
+          // Validate mutually exclusive paging vs byte ranges
+          const hasPages = typeof pages === 'string' && pages.trim().length > 0;
+          const hasOffsets = (typeof start !== 'undefined') || (typeof length !== 'undefined');
+          if (hasPages && hasOffsets) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'Provide either start/length or pages, not both.' }));
+          }
+
           let content = '';
           let total = 0;
           if (isPdf) {
+            if (hasPages) {
+              // Require OCR sidecar in this no-subagent mode
+              try { await fsp.access(path.join(baseDir, `${fid}.ocr.json`)); } catch {
+                return okText(JSON.stringify({ error: 'pages_not_supported_unprocessed_pdf', message: 'Page selection requires it to be processed first.' }));
+              }
+              try {
+                const { mdPath, cleanupDir } = await buildSelectedPagesMarkdown(filePath, String(pages));
+                try {
+                  content = await fsp.readFile(mdPath, 'utf-8');
+                } finally {
+                  try { await fsp.rm(cleanupDir, { recursive: true, force: true }); } catch {}
+                }
+                if (!content) return okText(JSON.stringify({ error: 'invalid_pages_spec', message: 'No matching pages found or invalid spec.' }));
+                total = content.length;
+                return okText(JSON.stringify({ file_id: fid, filename: fileName, pages: String(pages), encoding: 'utf8', content, total_chars: total }));
+              } catch (e) {
+                return okText(JSON.stringify({ error: 'sidecar_read_failed', message: String(e?.message || e) }));
+              }
+            }
             const payload = await loadFilePayload(filePath, { mimeType: meta.file_type || '', originalName: fileName });
             const text = String(payload?.text || '');
             total = text.length;

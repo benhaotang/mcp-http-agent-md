@@ -165,6 +165,10 @@ Expose these tools via MCP CallTool (Streamable HTTP). All tools operate by proj
 - `list_project_logs`: List commit logs `{ project_id }` → `{ logs: [{ hash, message, modified_by, created_at }] }`. The `modified_by` field shows the username of who made each commit.
 - `revert_project`: Revert a project `{ project_id, hash }`. Participants can only revert to commits in their most recent consecutive sequence from the end (to prevent discarding others' work). On success, response includes `{ project_id, hash }`.
 
+File management tools:
+- `list_file`: List uploaded documents for a project `{ project_id }`. Returns each file's metadata including filename, description, file_id, and processing status for PDFs.
+- `read_project_file`: Read content from uploaded project documents `{ project_id, file_id, start?, length?, pages? }`. Supports byte-range reading or page selection for processed PDFs. Available when USE_EXTERNAL_AI=false for direct file access.
+
 Scratchpad (ephemeral) tools:
 - `scratchpad_initialize`: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.
 - `review_scratchpad`: Review a scratchpad `{ name, scratchpad_id, IncludeCM?, IncludeTk? }`.

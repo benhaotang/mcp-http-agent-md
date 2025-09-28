@@ -292,7 +292,7 @@ NODE_ENV=production pnpm start
 - list_project_logs: List commit logs `{ name }` → `{ logs: [{ hash, message, modified_by, created_at }] }`. The `modified_by` field shows who made each commit.
 - revert_project: Revert to an earlier `hash` `{ name, hash }`. Shared participants can only revert to commits in their most recent consecutive sequence (to prevent discarding others' work). Trims history to that point (no branches).
 - list_file: List uploaded documents for a project `{ project_id }`. Returns each file's original filename, description, and file_id for reference.
-- read_project_file: Read a specific chunk of an uploaded project document `{ project_id, file_id, start?, length? }`. Returns UTF-8 text (PDFs parsed to text). Defaults to start=0, length=10000. (Only enabled when AI subagents are enabled)
+- read_project_file: Read a specific chunk of an uploaded project document `{ project_id, file_id, start?, length?, pages? }`. Returns UTF-8 text (PDFs parsed to text). Defaults to start=0, length=10000. For processed PDFs, use pages="1-3,5" instead of start/length. (Only enabled when USE_EXTERNAL_AI=false), the agent can only choose to use either read by chunk or by page. 
 
 Scratchpad (ephemeral, per-session) tools:
 - scratchpad_initialize: Start a new scratchpad for a one‑off task `{ name, tasks }`. The server generates and returns a random `scratchpad_id`. `tasks` is up to 6 items `{ task_id, status: 'open'|'complete', task_info, scratchpad?, comments? }`. Returns `{ scratchpad_id, project_id, tasks, common_memory }`.

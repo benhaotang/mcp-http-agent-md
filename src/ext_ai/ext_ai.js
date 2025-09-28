@@ -526,8 +526,43 @@ export async function summarizeFile(
     return { error: String(e?.message || e) };
   }
 
-  const systemPrompt = 'You are a concise, accurate summarizer.';
-  const prompt = String(promptOverride || '').trim() || `Read the attached document and produce the following Markdown sections only:
+  // Page-awareness: sidecar (OCR) or native PDF capability
+  let hasSidecar = false;
+  try { await fs.access(`${att.path}.ocr.json`); hasSidecar = true; } catch {}
+  const providerHasNativePages = providerKey === 'google' || providerKey === 'openai';
+  const pageAware = hasSidecar || providerHasNativePages;
+
+  let systemPrompt, prompt;
+  if (pageAware) {
+    systemPrompt = [
+      'You are an expert technical summarizer. Create a highly-usable description that helps a main orchestrator agent understand the document and target the right parts for deeper reading.',
+      'Be precise and avoid speculation. Include page numbers only when available; otherwise omit them.'
+    ].join(' ');
+
+    prompt = String(promptOverride || '').trim() || `Read the attached document and produce ONLY the following Markdown sections:
+
+# Summary
+- 5–10 sentences capturing the purpose, audience, scope, and key conclusions.
+- Call out any critical constraints, assumptions, or versioning notes.
+
+# Outline
+- Provide a hierarchical outline of sections/subsections.
+- For each item, append a page marker using [p. N] or [pp. A–B].
+
+# Summary per section/part/outline
+- For each outline item, add:
+  - Pages: [p. N] or [pp. A–B]
+  - What to look for: 1–3 bullets indicating where answers to likely questions may be found (e.g., formulas, definitions, procedures, API signatures).
+  - Verse: up to 2 short verbatim quotes that represent the section’s essence, each with a page marker (e.g., [p. 12]). Keep quotes under 200 characters.
+  - Cross-references: if parts of the document relate, note them (e.g., "See also §2.3 [p. 15]").
+
+Important:
+- Do not include any extra sections beyond the three above.
+- Output clean Markdown only.`;
+  } else {
+    // Page numbers not reliable; use classic prompt with no page references to avoid hallucination
+    systemPrompt = 'You are a concise, accurate summarizer.';
+    prompt = String(promptOverride || '').trim() || `Read the attached document and produce the following Markdown sections only:
 
 # Summary
 A concise but detailed summary of the document.
@@ -539,6 +574,7 @@ A hierarchical outline of the document (sections/subsections).
 For each section/part in the outline, provide a short summary capturing key points.
 
 Only return these three sections as Markdown.`;
+  }
 
   const result = await infer({
     apiKey,

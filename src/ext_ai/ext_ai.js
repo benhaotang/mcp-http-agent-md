@@ -129,7 +129,7 @@ async function buildSelectedPagesMarkdown(originalPath, pagesSpec) {
   for (const n of pages) {
     const md = byIndex.get(n);
     if (!md) continue;
-    parts.push(`\n\n## Page ${n}\n${md}`);
+    parts.push(`\n\n<page_${n}>\n\n${md}\n\n</page_${n}>`);
   }
   const content = parts.join('');
   const dir = await fs.mkdtemp(path.join(process.cwd(), '.tmp-submd-'));
@@ -394,7 +394,7 @@ export async function runScratchpadSubagent(
         if (!canUsePages) {
           throw new Error('pages_not_supported_unprocessed_pdf');
         }
-        if (hasSidecar) {
+        if (hasSidecar && !providerSupportsNativePages) {
           // Build a Markdown file containing only selected pages' text (with page headings)
           try {
             const { mdPath, cleanupDir } = await buildSelectedPagesMarkdown(attachmentPath, pagesSpec);
@@ -537,8 +537,8 @@ export async function summarizeFile(
   let systemPrompt, prompt;
   if (pageAware) {
     systemPrompt = [
-      'You are an expert technical summarizer. Create a highly-usable description that helps a main orchestrator agent understand the document and target the right parts for deeper reading.',
-      'Be precise and avoid speculation. Include page numbers only when available; otherwise omit them.'
+      'You are an expert summarizer. Create a highly-usable description that helps a main orchestrator agent understand the document and target the right parts for deeper reading.',
+      'Be precise and avoid speculation. Include correct page numbers when available, don\'t make them up.'
     ].join(' ');
 
     prompt = String(promptOverride || '').trim() || `Read the attached document and produce ONLY the following Markdown sections:
@@ -549,7 +549,7 @@ export async function summarizeFile(
 
 # Outline
 - Provide a hierarchical outline of sections/subsections.
-- For each item, append a page marker using [p. N] or [pp. A–B].
+- For each item, append the correct page marker of that section using [p. N] or [pp. A–B].
 
 # Summary per section/part/outline
 - For each outline item, add:
@@ -560,6 +560,7 @@ export async function summarizeFile(
 
 Important:
 - Do not include any extra sections beyond the three above.
+- Don't make up page numbers, it should always accurately reflect the contexts on that page(s).
 - Output clean Markdown only.`;
   } else {
     // Page numbers not reliable; use classic prompt with no page references to avoid hallucination

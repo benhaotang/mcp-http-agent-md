@@ -52,7 +52,7 @@ async function readOcrSidecar(pdfPath) {
       const markdown = String(page.markdown ?? page.text ?? '').trim();
       if (!markdown) continue;
       const idx = typeof page.index === 'number' ? page.index : null;
-      sections.push(idx != null ? `## Page ${idx}\n${markdown}` : markdown);
+      sections.push(idx != null ? `<page_${idx}>\n\n${markdown}\n\n</page_${idx}>` : markdown);
     }
     if (!sections.length) return null;
     return sections.join('\n\n');

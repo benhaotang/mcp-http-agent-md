@@ -50,12 +50,14 @@ export default function Dashboard({ onSelectProject }) {
     return s.replace(/[^A-Za-z0-9._\- ]/g, '').slice(0, 100) || 'Imported Project';
   }
 
+  const MAX_PROJECT_COPY_ITERATIONS = 1000;
+
   function uniqueProjectName(baseName) {
     const existing = new Set((data?.projects || []).map(p => String(p.name || '')));
     let name = baseName;
     if (!existing.has(name)) return name;
     let i = 1;
-    while (existing.has(`${baseName}_copy${i}`) && i < 1000) i++;
+    while (existing.has(`${baseName}_copy${i}`) && i < MAX_PROJECT_COPY_ITERATIONS) i++;
     return `${baseName}_copy${i}`;
   }
 

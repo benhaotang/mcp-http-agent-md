@@ -76,7 +76,7 @@ export default function ProjectPage() {
       {tab === 'agent' && <AgentEditor projectId={projectId} readOnly={readOnly} />}
       {tab === 'share' && <SharePanel projectId={projectId} />}
       {tab === 'files' && <ProjectFilesPanel projectId={projectId} readOnly={readOnly} />}
-      {tab === 'history' && <HistoryList projectId={projectId} />}
+      {tab === 'history' && <HistoryList projectId={projectId} readOnly={readOnly} />}
     </div>
   );
 }

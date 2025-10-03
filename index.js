@@ -1547,7 +1547,7 @@ app.delete(BASE_PATH, async (req, res) => {
 // Root info
 app.get('/', (req, res) => {
   res.type('text/plain').send(
-    `mcp-http-agent-md MCP server. POST ${BASE_PATH}?apiKey=... for MCP JSON-RPC.`
+    `<body>mcp-http-agent-md MCP server. POST ${BASE_PATH}?apiKey=... for MCP JSON-RPC. <br/> Web dashboard is at <a href=./ui title="Web Dashboard">/ui</a></body>`
   );
 });
 

@@ -2,9 +2,29 @@ import { spawn } from 'node:child_process';
 import process from 'node:process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { decode as decodeToon } from '@toon-format/toon';
 
 const PORT = process.env.TEST_PORT ? Number(process.env.TEST_PORT) : 43111;
 const BASE = `http://localhost:${PORT}/mcp`;
+
+// Helper to parse MCP tool responses (toon or JSON format)
+function parseResponse(text) {
+  if (!text) return {};
+
+  // Try to decode as toon format first
+  try {
+    const decoded = decodeToon(text);
+    return decoded;
+  } catch (toonErr) {
+    // Fallback to JSON parsing
+    try {
+      return JSON.parse(text);
+    } catch (jsonErr) {
+      // If both fail, return raw text wrapped in object
+      return { _raw: text };
+    }
+  }
+}
 
 async function waitForServer(proc, timeoutMs = 8000) {
   const start = Date.now();
@@ -72,11 +92,11 @@ async function run() {
 
     // 0) write to non-existent project should return error payload
     const badWrite = await client.callTool({ name: 'write_agent', arguments: { project_id: 'invalid_project_id', content: 'x' } });
-    const badPayload = JSON.parse(badWrite.content?.[0]?.text || '{}');
+    const badPayload = parseResponse(badWrite.content?.[0]?.text || '{}');
     assert(badPayload.error === 'project_not_found', 'write_agent should error for non-existent project');
     // Also ensure state updates error when project does not exist
     const badState = await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: 'invalid_project_id', match: ['ffffffff'], state: 'completed' } });
-    const badStatePayload = JSON.parse(badState.content?.[0]?.text || '{}');
+    const badStatePayload = parseResponse(badState.content?.[0]?.text || '{}');
     assert(badStatePayload.error === 'project_not_found', 'progress_set_new_state should error for non-existent project');
 
     // 1) tools/list
@@ -104,51 +124,51 @@ async function run() {
     const vproj2 = `${vproj}_renamed`;
     // init_project should create an initial commit and return hash
     const vInitRes = await client.callTool({ name: 'init_project', arguments: { name: vproj } });
-    const vInit = JSON.parse(vInitRes.content?.[0]?.text || '{}');
+    const vInit = parseResponse(vInitRes.content?.[0]?.text || '{}');
     assert(vInit.hash && typeof vInit.hash === 'string', 'init_project should return initial hash');
     assert(vInit.id && typeof vInit.id === 'string', 'init_project should return project id');
     const vprojId = vInit.id;
     // logs should have the init commit
     const vLogs1Res = await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } });
-    const vLogs1 = JSON.parse(vLogs1Res.content?.[0]?.text || '{}');
+    const vLogs1 = parseResponse(vLogs1Res.content?.[0]?.text || '{}');
     assert(Array.isArray(vLogs1.logs) && vLogs1.logs.length >= 1, 'logs should include at least the init commit');
     const initHash = vLogs1.logs[0].hash;
     assert(vLogs1.logs[0].message === 'init', 'first commit message should be init');
     // write_agent should return a new hash and append a log entry
     const vWriteRes = await client.callTool({ name: 'write_agent', arguments: { project_id: vprojId, content: '# agent\nHello V1', comment: 'write 1' } });
-    const vWrite = JSON.parse(vWriteRes.content?.[0]?.text || '{}');
+    const vWrite = parseResponse(vWriteRes.content?.[0]?.text || '{}');
     assert(vWrite.hash && typeof vWrite.hash === 'string', 'write_agent should return hash');
-    const vLogs2 = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
+    const vLogs2 = parseResponse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
     assert(vLogs2.logs.length === vLogs1.logs.length + 1, 'logs length should increment after write_agent');
     assert(vLogs2.logs[vLogs2.logs.length - 1].message === 'write 1', 'last commit should be write 1');
     // progress_add with comment should return hash and log
     const pRoot = { task_id: 'p0p0p0p0', task_info: 'Root' };
     const pChild = { task_id: 'c0c0c0c0', task_info: 'Child', parent_id: 'p0p0p0p0' };
     const vAddRes = await client.callTool({ name: 'progress_add', arguments: { project_id: vprojId, item: [pRoot, pChild], comment: 'add tasks' } });
-    const vAdd = JSON.parse(vAddRes.content?.[0]?.text || '{}');
+    const vAdd = parseResponse(vAddRes.content?.[0]?.text || '{}');
     assert(vAdd.hash && typeof vAdd.hash === 'string', 'progress_add should return hash when adding new tasks');
-    const vLogs3 = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
+    const vLogs3 = parseResponse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
     assert(vLogs3.logs.length === vLogs2.logs.length + 1, 'logs length should increment after progress_add');
     assert(vLogs3.logs[vLogs3.logs.length - 1].message === 'add tasks', 'last commit should be add tasks');
     // progress_set_new_state should return hash and log
     const vSetRes = await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: vprojId, match: ['p0p0p0p0'], state: 'completed', comment: 'set status' } });
-    const vSet = JSON.parse(vSetRes.content?.[0]?.text || '{}');
+    const vSet = parseResponse(vSetRes.content?.[0]?.text || '{}');
     assert(vSet.hash && typeof vSet.hash === 'string', 'progress_set_new_state should return hash when changes occur');
-    const vLogs4 = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
+    const vLogs4 = parseResponse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
     assert(vLogs4.logs.length === vLogs3.logs.length + 1, 'logs length should increment after progress_set_new_state');
     assert(vLogs4.logs[vLogs4.logs.length - 1].message === 'set status', 'last commit should be set status');
     // rename_project should return hash and log under the new name
     const vRenameRes = await client.callTool({ name: 'rename_project', arguments: { project_id: vprojId, newName: vproj2, comment: 'rename 1' } });
-    const vRename = JSON.parse(vRenameRes.content?.[0]?.text || '{}');
+    const vRename = parseResponse(vRenameRes.content?.[0]?.text || '{}');
     assert(vRename.hash && typeof vRename.hash === 'string', 'rename_project should return hash');
-    const vLogs5 = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
+    const vLogs5 = parseResponse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
     assert(vLogs5.logs.length === vLogs4.logs.length + 1, 'logs length should increment after rename_project');
     assert(vLogs5.logs[vLogs5.logs.length - 1].message === 'rename 1', 'last commit should be rename 1');
     // Revert to init: should trim history and reset state
     const revRes = await client.callTool({ name: 'revert_project', arguments: { project_id: vprojId, hash: initHash } });
-    const rev = JSON.parse(revRes.content?.[0]?.text || '{}');
+    const rev = parseResponse(revRes.content?.[0]?.text || '{}');
     assert(rev.hash === initHash, 'revert_project should return reverted hash');
-    const vLogsAfterRevert = JSON.parse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
+    const vLogsAfterRevert = parseResponse((await client.callTool({ name: 'list_project_logs', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
     assert(vLogsAfterRevert.logs.length === 1, 'history should be trimmed to the reverted commit');
     assert(vLogsAfterRevert.logs[0].hash === initHash, 'first commit after revert should be init');
     // Agent content should be reset (no longer contains our written text)
@@ -156,7 +176,7 @@ async function run() {
     const agentAfterRevert = readAfterRevert.content?.[0]?.text || '';
     assert(!agentAfterRevert.includes('Hello V1'), 'Agent content should be reverted');
     // Tasks should be empty after revert to init
-    const tasksAfterRevert = JSON.parse((await client.callTool({ name: 'read_progress', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
+    const tasksAfterRevert = parseResponse((await client.callTool({ name: 'read_progress', arguments: { project_id: vprojId } })).content?.[0]?.text || '{}');
     assert(Array.isArray(tasksAfterRevert.tasks) && tasksAfterRevert.tasks.length === 0, 'Tasks should be empty after revert to init');
 
     // Unique project name
@@ -166,7 +186,7 @@ async function run() {
     // 2) init_project
     const init = await client.callTool({ name: 'init_project', arguments: { name } });
     assert(init.content?.[0]?.type === 'text', 'init_project response content type');
-    const initPayload = JSON.parse(init.content?.[0]?.text || '{}');
+    const initPayload = parseResponse(init.content?.[0]?.text || '{}');
     assert(initPayload.id && typeof initPayload.id === 'string', 'init_project should return project id');
     const projectId = initPayload.id;
 
@@ -217,81 +237,81 @@ async function run() {
     const t2 = { task_id: 'b2c3d4e5', task_info: 'second', status: 'in_progress' };
     const t3 = { task_id: 'c3d4e5f6', task_info: 'third', status: 'completed' };
     const addTasksRes = await client.callTool({ name: 'progress_add', arguments: { project_id: projectId, item: [t1, t2, t3] } });
-    const addTasks = JSON.parse(addTasksRes.content?.[0]?.text || '{}');
+    const addTasks = parseResponse(addTasksRes.content?.[0]?.text || '{}');
     assert(Array.isArray(addTasks.added) && addTasks.added.length === 3, 'Should add three tasks');
 
     // Attempt to update non-existent task should error
     const noMatch = await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId, match: ['zzzzzzzz'], state: 'completed' } });
-    const noMatchPayload = JSON.parse(noMatch.content?.[0]?.text || '{}');
+    const noMatchPayload = parseResponse(noMatch.content?.[0]?.text || '{}');
     assert(noMatchPayload.error === 'task_not_found', 'Should error when no matching tasks found');
 
     // 6) read_progress returns JSON tasks and filter by status
     let readProgress = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId } });
-    let tasksPayload = JSON.parse(readProgress.content?.[0]?.text || '{}');
+    let tasksPayload = parseResponse(readProgress.content?.[0]?.text || '{}');
     assert(Array.isArray(tasksPayload.tasks) && tasksPayload.tasks.length >= 3, 'Should list tasks');
     const ids = tasksPayload.tasks.map(t => t.task_id);
     assert(ids.includes('a1b2c3d4') && ids.includes('b2c3d4e5') && ids.includes('c3d4e5f6'), 'Should contain all task ids');
 
     const onlyPending = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId, only: 'pending' } });
-    const onlyPendingJson = JSON.parse(onlyPending.content?.[0]?.text || '{}');
+    const onlyPendingJson = parseResponse(onlyPending.content?.[0]?.text || '{}');
     assert(onlyPendingJson.tasks.every(t => t.status === 'pending'), 'Filter pending should include only pending');
     const onlyDoing = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId, only: 'in_progress' } });
-    const onlyDoingJson = JSON.parse(onlyDoing.content?.[0]?.text || '{}');
+    const onlyDoingJson = parseResponse(onlyDoing.content?.[0]?.text || '{}');
     assert(onlyDoingJson.tasks.every(t => t.status === 'in_progress'), 'Filter in_progress should include only in_progress');
     const onlyDone = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId, only: 'done' } });
-    const onlyDoneJson = JSON.parse(onlyDone.content?.[0]?.text || '{}');
+    const onlyDoneJson = parseResponse(onlyDone.content?.[0]?.text || '{}');
     assert(onlyDoneJson.tasks.every(t => t.status === 'completed'), 'Filter done should include only completed');
 
     // 7) progress_add duplicate should report skipped list
     const dupRes = await client.callTool({ name: 'progress_add', arguments: { project_id: projectId, item: [{ task_id: 'c3d4e5f6', task_info: 'third-dup' }] } });
-    const dup = JSON.parse(dupRes.content?.[0]?.text || '{}');
+    const dup = parseResponse(dupRes.content?.[0]?.text || '{}');
     assert(Array.isArray(dup.skipped) && dup.skipped.includes('c3d4e5f6'), 'Duplicate add should indicate skipped id');
 
     // 8) progress_set_new_state with list (one id and one non-matching id)
     const setRes = await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId, match: ['b2c3d4e5', 'ffffffff'], state: 'completed' } });
-    const setPayload = JSON.parse(setRes.content?.[0]?.text || '{}');
+    const setPayload = parseResponse(setRes.content?.[0]?.text || '{}');
     assert(Array.isArray(setPayload.changed) && setPayload.changed.includes('b2c3d4e5'), 'Should change b2c3d4e5');
     assert(Array.isArray(setPayload.notMatched) && setPayload.notMatched.includes('ffffffff'), 'Should report notMatched');
 
     // 9.4) progress_add structured tasks on a new project
     const name3 = `${name}_arr`;
     const init3Res = await client.callTool({ name: 'init_project', arguments: { name: name3 } });
-    const init3Payload = JSON.parse(init3Res.content?.[0]?.text || '{}');
+    const init3Payload = parseResponse(init3Res.content?.[0]?.text || '{}');
     const projectId3 = init3Payload.id;
     const tA = { task_id: 'abcd1234', task_info: 'A' };
     const tB = { task_id: 'bcde2345', task_info: 'B', parent_id: 'abcd1234' };
     const wr = await client.callTool({ name: 'progress_add', arguments: { project_id: projectId3, item: [tA, tB] } });
-    const wrPayload = JSON.parse(wr.content?.[0]?.text || '{}');
+    const wrPayload = parseResponse(wr.content?.[0]?.text || '{}');
     assert(Array.isArray(wrPayload.added) && wrPayload.added.length === 2, 'progress_add should add two tasks');
     const rp3 = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId3 } });
-    const pt3 = JSON.parse(rp3.content?.[0]?.text || '{}');
+    const pt3 = parseResponse(rp3.content?.[0]?.text || '{}');
     const ids3 = pt3.tasks.map(t => t.task_id);
     assert(ids3.includes('abcd1234') && ids3.includes('bcde2345'), 'read_progress should list tasks we wrote');
 
     // 13) Update fields via progress_set_new_state: change task_info and extra_note of bcde2345
     const updRes = await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId3, match: ['bcde2345'], state: 'in_progress', task_info: 'B updated', extra_note: 'note' } });
-    const upd = JSON.parse(updRes.content?.[0]?.text || '{}');
+    const upd = parseResponse(updRes.content?.[0]?.text || '{}');
     assert(Array.isArray(upd.changed) && upd.changed.includes('bcde2345'), 'Should report changed id bcde2345');
     const rp4 = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId3 } });
-    const p4 = JSON.parse(rp4.content?.[0]?.text || '{}');
+    const p4 = parseResponse(rp4.content?.[0]?.text || '{}');
     const bRow = p4.tasks.find(t => t.task_id === 'bcde2345');
     assert(bRow && bRow.task_info === 'B updated' && bRow.extra_note === 'note' && bRow.status === 'in_progress', 'Fields should be updated');
 
     // 14) Archive root abcd1234; child bcde2345 should cascade to archived
     await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId3, match: ['abcd1234'], state: 'archived' } });
     const rp5 = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId3 } });
-    const p5 = JSON.parse(rp5.content?.[0]?.text || '{}');
+    const p5 = parseResponse(rp5.content?.[0]?.text || '{}');
     const ids5 = p5.tasks.map(t => t.task_id);
     assert(!ids5.includes('abcd1234') && !ids5.includes('bcde2345'), 'Default read excludes archived');
     const rp5arch = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId3, only: 'archived' } });
-    const p5a = JSON.parse(rp5arch.content?.[0]?.text || '{}');
+    const p5a = parseResponse(rp5arch.content?.[0]?.text || '{}');
     const ids5a = p5a.tasks.map(t => t.task_id);
     assert(ids5a.includes('abcd1234') && ids5a.includes('bcde2345'), 'Archived filter shows archived tasks including children');
 
     // 15) Completed cascades to children recursively
     const name4 = `${name}_cascade_complete`;
     const init4Res = await client.callTool({ name: 'init_project', arguments: { name: name4 } });
-    const init4Payload = JSON.parse(init4Res.content?.[0]?.text || '{}');
+    const init4Payload = parseResponse(init4Res.content?.[0]?.text || '{}');
     const projectId4 = init4Payload.id;
     const p1 = { task_id: 'aaaa1111', task_info: 'P1' };
     const c1 = { task_id: 'bbbb2222', task_info: 'C1', parent_id: 'aaaa1111' };
@@ -299,38 +319,38 @@ async function run() {
     await client.callTool({ name: 'progress_add', arguments: { project_id: projectId4, item: [p1, c1, c2] } });
     await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId4, match: ['aaaa1111'], state: 'completed' } });
     const rp6 = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId4, only: 'completed' } });
-    const p6 = JSON.parse(rp6.content?.[0]?.text || '{}');
+    const p6 = parseResponse(rp6.content?.[0]?.text || '{}');
     const ids6 = new Set((p6.tasks || []).map(t => t.task_id));
     assert(ids6.has('aaaa1111') && ids6.has('bbbb2222') && ids6.has('cccc3333'), 'Completing parent should cascade to all descendants');
 
     // 15.1) Attempt to modify child while parent is locked (completed) should be forbidden
     const forbidEditRes = await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId4, match: ['bbbb2222'], task_info: 'C1 edited while locked' } });
-    const forbidEdit = JSON.parse(forbidEditRes.content?.[0]?.text || '{}');
+    const forbidEdit = parseResponse(forbidEditRes.content?.[0]?.text || '{}');
     assert(Array.isArray(forbidEdit.forbidden) && forbidEdit.forbidden.includes('bbbb2222'), 'Editing child fields should be forbidden when parent is locked');
     // Attempt to unlock child status alone should also be forbidden while ancestor locked
     const forbidUnlockChildRes = await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId4, match: ['bbbb2222'], state: 'pending' } });
-    const forbidUnlockChild = JSON.parse(forbidUnlockChildRes.content?.[0]?.text || '{}');
+    const forbidUnlockChild = parseResponse(forbidUnlockChildRes.content?.[0]?.text || '{}');
     assert(Array.isArray(forbidUnlockChild.forbidden) && forbidUnlockChild.forbidden.includes('bbbb2222'), 'Unlocking child should be forbidden when ancestor is locked');
 
     // 15.2) Revert parent to in_progress; should cascade to descendants
     await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId4, match: ['aaaa1111'], state: 'in_progress' } });
     const rp7 = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId4, only: 'in_progress' } });
-    const p7 = JSON.parse(rp7.content?.[0]?.text || '{}');
+    const p7 = parseResponse(rp7.content?.[0]?.text || '{}');
     const ids7 = new Set((p7.tasks || []).map(t => t.task_id));
     assert(ids7.has('aaaa1111') && ids7.has('bbbb2222') && ids7.has('cccc3333'), 'Unlocking parent should cascade in_progress to all descendants');
 
     // 15.3) Now child can be edited
     const childEditRes = await client.callTool({ name: 'progress_set_new_state', arguments: { project_id: projectId4, match: ['bbbb2222'], task_info: 'C1 unlocked edit', extra_note: 'ok' } });
-    const childEdit = JSON.parse(childEditRes.content?.[0]?.text || '{}');
+    const childEdit = parseResponse(childEditRes.content?.[0]?.text || '{}');
     assert(Array.isArray(childEdit.changed) && childEdit.changed.includes('bbbb2222'), 'Child edit should be allowed after unlock');
     const rp8 = await client.callTool({ name: 'read_progress', arguments: { project_id: projectId4 } });
-    const p8 = JSON.parse(rp8.content?.[0]?.text || '{}');
+    const p8 = parseResponse(rp8.content?.[0]?.text || '{}');
     const c1row = (p8.tasks || []).find(t => t.task_id === 'bbbb2222');
     assert(c1row && c1row.task_info === 'C1 unlocked edit' && c1row.extra_note === 'ok', 'Child fields should reflect unlocked edits');
 
     // 11) generate_task_ids returns unique 8-char ids not colliding with user tasks
     const genRes = await client.callTool({ name: 'generate_task_ids', arguments: { count: 5 } });
-    const gen = JSON.parse(genRes.content?.[0]?.text || '{}');
+    const gen = parseResponse(genRes.content?.[0]?.text || '{}');
     assert(Array.isArray(gen.ids) && gen.ids.length === 5, 'generate_task_ids should return requested count');
     const allValid = gen.ids.every(id => /^[a-z0-9]{8}$/.test(id));
     assert(allValid, 'All generated ids should be 8-char lowercase a-z0-9');
@@ -351,20 +371,20 @@ async function run() {
     // --- Scratchpad tests ---
     const spProject = `${name}_sp`;
     const spInitProjRes = await client.callTool({ name: 'init_project', arguments: { name: spProject } });
-    const spInitProj = JSON.parse(spInitProjRes.content?.[0]?.text || '{}');
+    const spInitProj = parseResponse(spInitProjRes.content?.[0]?.text || '{}');
     const spProjectId = spInitProj.id;
     const spTasks = [
       { task_id: 'temp1', task_info: 'one-off step 1', status: 'open', scratchpad: 'notes1', comments: 'c1' },
       { task_id: 'temp2', task_info: 'one-off step 2', status: 'done', scratchpad: 'notes2' } // 'done' should normalize to 'complete'
     ];
     const spInit = await client.callTool({ name: 'scratchpad_initialize', arguments: { project_id: spProjectId, tasks: spTasks } });
-    const spInitPayload = JSON.parse(spInit.content?.[0]?.text || '{}');
+    const spInitPayload = parseResponse(spInit.content?.[0]?.text || '{}');
     assert(Array.isArray(spInitPayload.tasks) && spInitPayload.tasks.length === 2, 'scratchpad_initialize should return tasks');
     const spId = spInitPayload.scratchpad_id;
     assert(typeof spId === 'string' && spId.length > 0, 'scratchpad_initialize should return a generated scratchpad_id');
     // Review: should expose tasks and empty common_memory
     const spReview1 = await client.callTool({ name: 'review_scratchpad', arguments: { project_id: spProjectId, scratchpad_id: spId } });
-    const spRev1 = JSON.parse(spReview1.content?.[0]?.text || '{}');
+    const spRev1 = parseResponse(spReview1.content?.[0]?.text || '{}');
     assert(Array.isArray(spRev1.tasks) && typeof spRev1.common_memory === 'string', 'review_scratchpad should return tasks and common_memory');
     const spT2 = spRev1.tasks.find(t => t.task_id === 'temp2');
     assert(spT2 && spT2.status === 'complete', 'status "done" should normalize to "complete"');
@@ -373,24 +393,24 @@ async function run() {
       { task_id: 'temp1', status: 'complete', comments: 'finished', scratchpad: 'updated notes' },
       { task_id: 'nope', comments: 'should not exist' }
     ] } });
-    const spUpdPayload = JSON.parse(spUpd.content?.[0]?.text || '{}');
+    const spUpdPayload = parseResponse(spUpd.content?.[0]?.text || '{}');
     assert(Array.isArray(spUpdPayload.updated) && spUpdPayload.updated.includes('temp1'), 'scratchpad_update_task should report updated id');
     assert(Array.isArray(spUpdPayload.notFound) && spUpdPayload.notFound.includes('nope'), 'scratchpad_update_task should report notFound for missing id');
     // Review changes reflect
     const spReview2 = await client.callTool({ name: 'review_scratchpad', arguments: { project_id: spProjectId, scratchpad_id: spId } });
-    const spRev2 = JSON.parse(spReview2.content?.[0]?.text || '{}');
+    const spRev2 = parseResponse(spReview2.content?.[0]?.text || '{}');
     const spT1 = spRev2.tasks.find(t => t.task_id === 'temp1');
     assert(spT1 && spT1.status === 'complete' && spT1.comments === 'finished' && spT1.scratchpad === 'updated notes', 'Updated fields should be reflected');
     // Append common memory
     await client.callTool({ name: 'scratchpad_append_common_memory', arguments: { project_id: spProjectId, scratchpad_id: spId, append: 'first memory' } });
     await client.callTool({ name: 'scratchpad_append_common_memory', arguments: { project_id: spProjectId, scratchpad_id: spId, append: ['second memory','third memory'] } });
     const spReview3 = await client.callTool({ name: 'review_scratchpad', arguments: { project_id: spProjectId, scratchpad_id: spId } });
-    const spRev3 = JSON.parse(spReview3.content?.[0]?.text || '{}');
+    const spRev3 = parseResponse(spReview3.content?.[0]?.text || '{}');
     assert(spRev3.common_memory.includes('first memory') && spRev3.common_memory.includes('second memory') && spRev3.common_memory.includes('third memory'), 'Appended common_memory should accumulate');
 
     // 10) list_projects contains project with rich data
     const list2 = await client.callTool({ name: 'list_projects', arguments: {} });
-    const projectsData = JSON.parse(list2.content?.[0]?.text || '{}').projects || [];
+    const projectsData = parseResponse(list2.content?.[0]?.text || '{}').projects || [];
     assert(Array.isArray(projectsData), 'list_projects should return array of project objects');
     const foundProject = projectsData.find(p => p.id === projectId);
     assert(foundProject && foundProject.name === name, 'list_projects should include the project with id and name');
@@ -398,7 +418,7 @@ async function run() {
     // 11) rename_project
     await client.callTool({ name: 'rename_project', arguments: { project_id: projectId, newName: name2 } });
     const list3 = await client.callTool({ name: 'list_projects', arguments: {} });
-    const projectsData2 = JSON.parse(list3.content?.[0]?.text || '{}').projects || [];
+    const projectsData2 = parseResponse(list3.content?.[0]?.text || '{}').projects || [];
     const renamedProject = projectsData2.find(p => p.id === projectId);
     assert(renamedProject && renamedProject.name === name2, 'rename_project should reflect in list with new name');
     assert(!projectsData2.find(p => p.name === name), 'old name should not appear in list');
@@ -406,19 +426,19 @@ async function run() {
     // 12) delete_project
     await client.callTool({ name: 'delete_project', arguments: { project_id: projectId } });
     const list4 = await client.callTool({ name: 'list_projects', arguments: {} });
-    const projectsData3 = JSON.parse(list4.content?.[0]?.text || '{}').projects || [];
+    const projectsData3 = parseResponse(list4.content?.[0]?.text || '{}').projects || [];
     assert(!projectsData3.find(p => p.id === projectId), 'delete_project should remove the project');
 
     // 13) Best practices only by default, and include filters
     // Default (no include) should return only best-practices and no examples
     const ex0Res = await client.callTool({ name: 'get_agents_md_best_practices_and_examples', arguments: {} });
-    const ex0 = JSON.parse(ex0Res.content?.[0]?.text || '{}');
+    const ex0 = parseResponse(ex0Res.content?.[0]?.text || '{}');
     assert(typeof ex0.the_art_of_writing_agents_md === 'string' && ex0.the_art_of_writing_agents_md.length > 0, 'Should include the_art_of_writing_agents_md');
     assert(Array.isArray(ex0.examples) && ex0.examples.length === 0, 'Default should return no examples');
 
     // Filter by include
     const ex1Res = await client.callTool({ name: 'get_agents_md_best_practices_and_examples', arguments: { include: 'philosophy' } });
-    const ex1 = JSON.parse(ex1Res.content?.[0]?.text || '{}');
+    const ex1 = parseResponse(ex1Res.content?.[0]?.text || '{}');
     assert(typeof ex1.the_art_of_writing_agents_md === 'string' && ex1.the_art_of_writing_agents_md.length > 0, 'Should include the_art_of_writing_agents_md');
     assert(Array.isArray(ex1.examples), 'examples should be an array');
     if (ex1.examples.length > 0) {
@@ -427,7 +447,7 @@ async function run() {
     }
     // Also test list input for only
     const ex2Res = await client.callTool({ name: 'get_agents_md_best_practices_and_examples', arguments: { include: ['philosophy'] } });
-    const ex2 = JSON.parse(ex2Res.content?.[0]?.text || '{}');
+    const ex2 = parseResponse(ex2Res.content?.[0]?.text || '{}');
     assert(typeof ex2.the_art_of_writing_agents_md === 'string' && ex2.the_art_of_writing_agents_md.length > 0, 'List filter should also include art field');
 
     console.log('All MCP tool tests passed.');

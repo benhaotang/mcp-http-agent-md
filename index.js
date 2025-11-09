@@ -11,6 +11,7 @@ import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { encode as encodeToon } from '@toon-format/toon';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -874,18 +875,36 @@ function buildMcpServer(userId, userName) {
       return { content: [{ type: 'text', text }] };
     }
 
+    // Convert JSON object to toon format for LLM responses
+    function jsonToToon(obj) {
+      try {
+        // Use toon-format SDK to encode the object
+        return encodeToon(obj);
+      } catch (err) {
+        // Fallback to JSON if toon encoding fails
+        console.warn('Failed to encode to toon format, falling back to JSON:', err);
+        return JSON.stringify(obj);
+      }
+    }
+
+    // Helper to return toon-formatted response for MCP tools
+    async function okToon(obj) {
+      const toonText = jsonToToon(obj);
+      return { content: [{ type: 'text', text: toonText }] };
+    }
+
     switch (name) {
       case 'list_projects': {
         const rows = await ops.listProjects();
         const projects = rows.map(r => ({ id: r.id, name: r.name, owner_id: r.owner_id, permission: r.permission, read_only: r.permission === 'ro' }));
-        return okText(JSON.stringify({ projects }));
+        return okToon({ projects });
       }
       case 'list_file': {
         const { project_id } = args || {};
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
           if (!acc) {
-            return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+            return okToon({ error: 'project_not_found', message: 'project not found' });
           }
           const rows = await dbListProjectFiles(acc.owner_id, acc.project_id);
           const baseDir = path.join(getDataDir(), acc.project_id);
@@ -939,10 +958,10 @@ function buildMcpServer(userId, userName) {
               total_pages: isPdf ? total_pages : undefined,
             });
           }
-          return okText(JSON.stringify({ files }));
+          return okToon({ files });
         } catch (err) {
           const msg = String(err?.message || err || 'list files failed');
-          return okText(JSON.stringify({ error: 'list_files_failed', message: msg }));
+          return okToon({ error: 'list_files_failed', message: msg });
         }
       }
       case 'read_project_file': {
@@ -950,33 +969,33 @@ function buildMcpServer(userId, userName) {
         const pid = String(project_id || '').trim();
         const fid = String(file_id || '').trim();
         if (!pid) {
-          return okText(JSON.stringify({ error: 'project_id_required', message: 'project_id is required' }));
+          return okToon({ error: 'project_id_required', message: 'project_id is required' });
         }
         if (!fid) {
-          return okText(JSON.stringify({ error: 'file_id_required', message: 'file_id is required' }));
+          return okToon({ error: 'file_id_required', message: 'file_id is required' });
         }
         if (!/^[a-f0-9]{16}$/i.test(fid)) {
-          return okText(JSON.stringify({ error: 'invalid_file_id', message: 'file_id must be 16-character hex string' }));
+          return okToon({ error: 'invalid_file_id', message: 'file_id must be 16-character hex string' });
         }
         try {
           const acc = await dbResolveProjectAccess(userId, pid);
           if (!acc) {
-            return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+            return okToon({ error: 'project_not_found', message: 'project not found' });
           }
           if (acc.permission === 'ro') {
-            return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
+            return okToon({ error: 'read_only_project', message: 'You have read-only access to this project.' });
           }
           const rows = await dbListProjectFiles(acc.owner_id, acc.project_id);
           const meta = rows.find(r => String(r.file_id) === fid);
           if (!meta) {
-            return okText(JSON.stringify({ error: 'file_not_found', message: 'file_id not found for this project' }));
+            return okToon({ error: 'file_not_found', message: 'file_id not found for this project' });
           }
 
           const baseDir = path.join(getDataDir(), acc.project_id);
           const filePath = path.join(baseDir, fid);
           const rel = path.relative(baseDir, filePath);
           if (rel.startsWith('..')) {
-            return okText(JSON.stringify({ error: 'invalid_path', message: 'Invalid file location' }));
+            return okToon({ error: 'invalid_path', message: 'Invalid file location' });
           }
 
           const stats = await fsp.stat(filePath);
@@ -999,7 +1018,7 @@ function buildMcpServer(userId, userName) {
           const hasPages = typeof pages === 'string' && pages.trim().length > 0;
           const hasOffsets = (typeof start !== 'undefined') || (typeof length !== 'undefined');
           if (hasPages && hasOffsets) {
-            return okText(JSON.stringify({ error: 'invalid_request', message: 'Provide either start/length or pages, not both.' }));
+            return okToon({ error: 'invalid_request', message: 'Provide either start/length or pages, not both.' });
           }
 
           let content = '';
@@ -1008,7 +1027,7 @@ function buildMcpServer(userId, userName) {
             if (hasPages) {
               // Require OCR sidecar in this no-subagent mode
               try { await fsp.access(path.join(baseDir, `${fid}.ocr.json`)); } catch {
-                return okText(JSON.stringify({ error: 'pages_not_supported_unprocessed_pdf', message: 'Page selection requires it to be processed first.' }));
+                return okToon({ error: 'pages_not_supported_unprocessed_pdf', message: 'Page selection requires it to be processed first.' });
               }
               try {
                 const { mdPath, cleanupDir } = await buildSelectedPagesMarkdown(filePath, String(pages));
@@ -1017,11 +1036,11 @@ function buildMcpServer(userId, userName) {
                 } finally {
                   try { await fsp.rm(cleanupDir, { recursive: true, force: true }); } catch {}
                 }
-                if (!content) return okText(JSON.stringify({ error: 'invalid_pages_spec', message: 'No matching pages found or invalid spec.' }));
+                if (!content) return okToon({ error: 'invalid_pages_spec', message: 'No matching pages found or invalid spec.' });
                 total = content.length;
-                return okText(JSON.stringify({ file_id: fid, filename: fileName, pages: String(pages), encoding: 'utf8', content, total_chars: total }));
+                return okToon({ file_id: fid, filename: fileName, pages: String(pages), encoding: 'utf8', content, total_chars: total });
               } catch (e) {
-                return okText(JSON.stringify({ error: 'sidecar_read_failed', message: String(e?.message || e) }));
+                return okToon({ error: 'sidecar_read_failed', message: String(e?.message || e) });
               }
             }
             const payload = await loadFilePayload(filePath, { mimeType: meta.file_type || '', originalName: fileName });
@@ -1030,7 +1049,7 @@ function buildMcpServer(userId, userName) {
             const actualStart = Math.min(safeStart, total);
             const chunk = text.slice(actualStart, actualStart + safeLength);
             const truncated = actualStart + chunk.length < total;
-            return okText(JSON.stringify({
+            return okToon({
               file_id: fid,
               filename: fileName,
               start: actualStart,
@@ -1039,7 +1058,7 @@ function buildMcpServer(userId, userName) {
               encoding: 'utf8',
               content: chunk,
               truncated,
-            }));
+            });
           }
 
           const actualStart = Math.min(safeStart, totalBytes);
@@ -1060,7 +1079,7 @@ function buildMcpServer(userId, userName) {
           }
           content = chunk.toString('utf8');
 
-          return okText(JSON.stringify({
+          return okToon({
             file_id: fid,
             filename: fileName,
             start: actualStart,
@@ -1069,10 +1088,10 @@ function buildMcpServer(userId, userName) {
             encoding: 'utf8',
             content,
             truncated: actualStart + chunk.length < totalBytes,
-          }));
+          });
         } catch (err) {
           if (err?.code === 'ENOENT') {
-            return okText(JSON.stringify({ error: 'file_not_found', message: 'File not found on disk' }));
+            return okToon({ error: 'file_not_found', message: 'File not found on disk' });
           }
           const msg = String(err?.message || err || 'read file failed');
           const code = /project not found/i.test(msg)
@@ -1082,56 +1101,56 @@ function buildMcpServer(userId, userName) {
               : (/file_not_found/i.test(msg)
                 ? 'file_not_found'
                 : 'read_file_failed'));
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'init_project': {
         const { name: projName, agent, progress } = args || {};
         try {
           if (!validateProjectName(projName)) {
-            return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
+            return okToon({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' });
           }
           const result = await ops.initProject(projName, { agent, progress });
           // Tell agents about task_id constraint
           const finalResult = { status: 'ok', note: 'Tasks use exactly 8 lowercase a-z0-9 IDs (e.g., abcd1234).', ...result };
-          return okText(JSON.stringify(finalResult));
+          return okToon(finalResult);
         } catch (err) {
           const msg = String(err?.message || err || 'init failed');
           const code = /user not authenticated/i.test(msg) ? 'unauthorized' : (/project name required/i.test(msg) ? 'invalid_request' : 'init_failed');
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'delete_project': {
         const { project_id } = args || {};
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
-          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
-          if (acc.permission !== 'owner') return okText(JSON.stringify({ error: 'forbidden', message: 'Only the project owner can delete the project' }));
+          if (!acc) return okToon({ error: 'project_not_found', message: 'project not found' });
+          if (acc.permission !== 'owner') return okToon({ error: 'forbidden', message: 'Only the project owner can delete the project' });
           await ops.removeProject(String(project_id || ''));
           return okText('deleted');
         } catch (err) {
           const msg = String(err?.message || err || 'delete failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'delete_failed';
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'rename_project': {
         const { project_id, newName, comment } = args || {};
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
-          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
-          if (acc.permission !== 'owner') return okText(JSON.stringify({ error: 'forbidden', message: 'Only the project owner can rename the project' }));
+          if (!acc) return okToon({ error: 'project_not_found', message: 'project not found' });
+          if (acc.permission !== 'owner') return okToon({ error: 'forbidden', message: 'Only the project owner can rename the project' });
           const result = await ops.renameProject(String(project_id || ''), String(newName || ''));
           try {
             const hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'rename_project', comment, modifiedBy: userId });
-            return okText(JSON.stringify({ ...result, hash }));
+            return okToon({ ...result, hash });
           } catch {
-            return okText(JSON.stringify(result));
+            return okToon(result);
           }
         } catch (err) {
           const msg = String(err?.message || err || 'rename failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'rename_failed';
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'read_agent': {
@@ -1147,7 +1166,7 @@ function buildMcpServer(userId, userName) {
         } catch (err) {
           const msg = String(err?.message || err);
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'read_failed';
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'write_agent': {
@@ -1156,15 +1175,15 @@ function buildMcpServer(userId, userName) {
         const editMode = String(mode || (patch ? 'patch' : 'full')).toLowerCase();
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
-          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
-          if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
+          if (!acc) return okToon({ error: 'project_not_found', message: 'project not found' });
+          if (acc.permission === 'ro') return okToon({ error: 'read_only_project', message: 'You have read-only access to this project.' });
 
           if (editMode === 'full') {
             if (typeof content !== 'string') throw new Error('content (string) required for full mode');
             await dbWriteDoc(acc.owner_id, acc.project_id, 'agent', content);
             let hash = null;
             try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'write_agent', comment, modifiedBy: userId }); } catch {}
-            return okText(JSON.stringify({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8'), hash }));
+            return okToon({ mode: 'full', status: 'ok', bytes: Buffer.byteLength(content, 'utf8'), hash });
           }
           if (editMode === 'patch' || editMode === 'diff') {
             if (typeof patch !== 'string') throw new Error('patch (unified diff string) required for patch/diff mode');
@@ -1173,7 +1192,7 @@ function buildMcpServer(userId, userName) {
             await dbWriteDoc(acc.owner_id, acc.project_id, 'agent', updated);
             let hash = null;
             try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'write_agent', comment, modifiedBy: userId }); } catch {}
-            return okText(JSON.stringify({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8'), hash }));
+            return okToon({ mode: 'patch', status: 'ok', oldBytes: Buffer.byteLength(current, 'utf8'), newBytes: Buffer.byteLength(updated, 'utf8'), hash });
           }
           throw new Error(`Unknown mode: ${mode}`);
         } catch (err) {
@@ -1182,7 +1201,7 @@ function buildMcpServer(userId, userName) {
           const suggest = code === 'project_not_found' ? 'init_project' : (code === 'patch_failed' ? 'read_agent' : undefined);
           const payload = { error: code, message: msg };
           if (suggest) payload.suggest = suggest;
-          return okText(JSON.stringify(payload));
+          return okToon(payload);
         }
       }
       case 'read_progress': {
@@ -1194,18 +1213,18 @@ function buildMcpServer(userId, userName) {
         const filterProvided = typeof only !== 'undefined';
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
-          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (!acc) return okToon({ error: 'project_not_found', message: 'project not found' });
           // If a filter was provided but normalized to empty (no recognized statuses), return empty set.
           if (filterProvided && wanted.length === 0) {
-            return okText(JSON.stringify({ tasks: [], markdown: '' }));
+            return okToon({ tasks: [], markdown: '' });
           }
           const rows = await dbListTasks(acc.owner_id, acc.project_id, { only: wanted });
           const markdown = renderTasksMarkdown(rows);
-          return okText(JSON.stringify({ tasks: rows, markdown }));
+          return okToon({ tasks: rows, markdown });
         } catch (err) {
           const msg = String(err?.message || err);
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'read_failed';
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       
@@ -1213,7 +1232,7 @@ function buildMcpServer(userId, userName) {
         const { include } = args || {};
         const { theArt, examples, rawParsed } = await loadAgentExamplesJson();
         if (!rawParsed) {
-          return okText(JSON.stringify({ error: 'examples_file_not_found', message: 'example_agent_md.json not found or invalid', the_art_of_writing_agents_md: '', examples: [] }));
+          return okToon({ error: 'examples_file_not_found', message: 'example_agent_md.json not found or invalid', the_art_of_writing_agents_md: '', examples: [] });
         }
         const includeList = normalizeIncludeList(include);
         // Default: only best-practices
@@ -1226,20 +1245,20 @@ function buildMcpServer(userId, userName) {
           const filtered = filterExamplesByInclude(examples, includeList);
           result = { the_art_of_writing_agents_md: theArt, examples: filtered };
         }
-        return okText(JSON.stringify(result));
+        return okToon(result);
       }
       case 'scratchpad_initialize': {
         const { project_id, tasks } = args || {};
         try {
           // Server generates scratchpad_id
           const sp = await dbInitScratchpad(userId, String(project_id || ''), '', Array.isArray(tasks) ? tasks : []);
-          return okText(JSON.stringify(sp));
+          return okToon(sp);
         } catch (err) {
           const msg = String(err?.message || err || 'init failed');
           const code = /project not found/i.test(msg)
             ? 'project_not_found'
             : (/failed_to_generate_scratchpad_id/i.test(msg) ? 'init_failed' : 'init_failed');
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'review_scratchpad': {
@@ -1250,7 +1269,7 @@ function buildMcpServer(userId, userName) {
           // If neither IncludeCM nor IncludeTk is provided, return full content (backwards-compatible default)
           const includeAllByDefault = (typeof IncludeCM === 'undefined' && typeof IncludeTk === 'undefined');
           if (includeAllByDefault) {
-            return okText(JSON.stringify({ tasks: sp.tasks || [], common_memory: sp.common_memory || '' }));
+            return okToon({ tasks: sp.tasks || [], common_memory: sp.common_memory || '' });
           }
 
           const result = {};
@@ -1278,33 +1297,33 @@ function buildMcpServer(userId, userName) {
             }
           }
 
-          return okText(JSON.stringify(result));
+          return okToon(result);
         } catch (err) {
           const msg = String(err?.message || err || 'review failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : (/scratchpad not found/i.test(msg) ? 'scratchpad_not_found' : 'review_failed');
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'scratchpad_update_task': {
         const { project_id, scratchpad_id, updates } = args || {};
         try {
           const res = await dbUpdateScratchpadTasks(userId, String(project_id || ''), String(scratchpad_id || ''), Array.isArray(updates) ? updates : []);
-          return okText(JSON.stringify(res));
+          return okToon(res);
         } catch (err) {
           const msg = String(err?.message || err || 'update failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : (/scratchpad not found/i.test(msg) ? 'scratchpad_not_found' : 'update_failed');
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'scratchpad_append_common_memory': {
         const { project_id, scratchpad_id, append } = args || {};
         try {
           const sp = await dbAppendScratchpadCommonMemory(userId, String(project_id || ''), String(scratchpad_id || ''), append);
-          return okText(JSON.stringify(sp));
+          return okToon(sp);
         } catch (err) {
           const msg = String(err?.message || err || 'append failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : (/scratchpad not found/i.test(msg) ? 'scratchpad_not_found' : 'append_failed');
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'scratchpad_subagent': {
@@ -1312,7 +1331,7 @@ function buildMcpServer(userId, userName) {
         try {
           const externalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false';
           if (!externalAi) {
-            return okText(JSON.stringify({ error: 'external_ai_disabled', message: 'scratchpad_subagent is disabled (USE_EXTERNAL_AI=false)' }));
+            return okToon({ error: 'external_ai_disabled', message: 'scratchpad_subagent is disabled (USE_EXTERNAL_AI=false)' });
           }
           const result = await runScratchpadSubagent(userId, {
             project_id: String(project_id || ''),
@@ -1324,10 +1343,10 @@ function buildMcpServer(userId, userName) {
             file_id,
             file_path,
           });
-          return okText(JSON.stringify(result));
+          return okToon(result);
         } catch (err) {
           const msg = String(err?.message || err || 'subagent failed');
-          return okText(JSON.stringify({ run_id: `run-${Math.random().toString(36).slice(2, 10)}`, status: 'failure', error: msg }));
+          return okToon({ run_id: `run-${Math.random().toString(36).slice(2, 10)}`, status: 'failure', error: msg });
         }
       }
       case 'scratchpad_subagent_status': {
@@ -1335,32 +1354,32 @@ function buildMcpServer(userId, userName) {
         try {
           const externalAi = String(process.env.USE_EXTERNAL_AI || '').toLowerCase() !== 'false';
           if (!externalAi) {
-            return okText(JSON.stringify({ error: 'external_ai_disabled', message: 'scratchpad_subagent_status is disabled (USE_EXTERNAL_AI=false)' }));
+            return okToon({ error: 'external_ai_disabled', message: 'scratchpad_subagent_status is disabled (USE_EXTERNAL_AI=false)' });
           }
           const pollable = new Set(['pending','in_progress']);
           const maxChecks = 5;
           const waitMs = 5000;
           let info = await dbGetSubagentRun(userId, String(project_id || ''), String(run_id || ''));
-          if (!info) return okText(JSON.stringify({ error: 'run_not_found', message: 'Unknown run_id for this project', run_id }));
-          if (!pollable.has(info.status)) return okText(JSON.stringify(info));
+          if (!info) return okToon({ error: 'run_not_found', message: 'Unknown run_id for this project', run_id });
+          if (!pollable.has(info.status)) return okToon(info);
           for (let i = 0; i < maxChecks; i++) {
             await new Promise(r => setTimeout(r, waitMs));
             info = await dbGetSubagentRun(userId, String(project_id || ''), String(run_id || ''));
-            if (!info) return okText(JSON.stringify({ error: 'run_not_found', message: 'Unknown run_id for this project', run_id }));
+            if (!info) return okToon({ error: 'run_not_found', message: 'Unknown run_id for this project', run_id });
             if (!pollable.has(info.status)) break;
           }
-          return okText(JSON.stringify(info));
+          return okToon(info);
         } catch (err) {
           const msg = String(err?.message || err || 'status failed');
-          return okText(JSON.stringify({ error: 'status_failed', message: msg }));
+          return okToon({ error: 'status_failed', message: msg });
         }
       }
       case 'progress_add': {
         const { project_id, item, comment } = args || {};
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
-          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
-          if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
+          if (!acc) return okToon({ error: 'project_not_found', message: 'project not found' });
+          if (acc.permission === 'ro') return okToon({ error: 'read_only_project', message: 'You have read-only access to this project.' });
           // Enforce arrays: either an array directly, or a JSON string that parses to an array
           let incoming;
           if (Array.isArray(item)) {
@@ -1369,38 +1388,38 @@ function buildMcpServer(userId, userName) {
             try {
               const parsed = JSON.parse(item.trim());
               if (!Array.isArray(parsed)) {
-                return okText(JSON.stringify({ error: 'invalid_request', message: 'item must be an array of task objects (JSON array supported when string)' }));
+                return okToon({ error: 'invalid_request', message: 'item must be an array of task objects (JSON array supported when string)' });
               }
               incoming = parsed;
             } catch {
-              return okText(JSON.stringify({ error: 'invalid_request', message: 'item must be valid JSON array when provided as a string' }));
+              return okToon({ error: 'invalid_request', message: 'item must be valid JSON array when provided as a string' });
             }
           } else {
-            return okText(JSON.stringify({ error: 'invalid_request', message: 'item must be an array of task objects' }));
+            return okToon({ error: 'invalid_request', message: 'item must be an array of task objects' });
           }
 
           const { tasks, invalid } = validateAndNormalizeTasks(incoming);
           if (!tasks.length && invalid.length) {
-            return okText(JSON.stringify({ added: [], exists: [], invalid, notice: 'No valid tasks to add' }));
+            return okToon({ added: [], exists: [], invalid, notice: 'No valid tasks to add' });
           }
           const res = await dbAddTasks(acc.owner_id, acc.project_id, tasks);
           let hash = null;
           if ((res.added?.length || 0) > 0) {
             try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'progress_add', comment, modifiedBy: userId }); } catch {}
           }
-          return okText(JSON.stringify({ added: res.added, skipped: res.exists, invalid, hash }));
+          return okToon({ added: res.added, skipped: res.exists, invalid, hash });
         } catch (err) {
           const msg = String(err?.message || err || 'add failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'add_failed';
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'progress_set_new_state': {
         const { project_id, match, state, task_info, parent_id, extra_note, comment } = args || {};
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
-          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
-          if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
+          if (!acc) return okToon({ error: 'project_not_found', message: 'project not found' });
+          if (acc.permission === 'ro') return okToon({ error: 'read_only_project', message: 'You have read-only access to this project.' });
           const normalizedState = typeof state === 'undefined' ? undefined : normalizeStatus(state);
           // Enforce arrays: either an array directly, or a JSON string that parses to an array of strings
           let matchList = [];
@@ -1410,14 +1429,14 @@ function buildMcpServer(userId, userName) {
             try {
               const parsed = JSON.parse(match.trim());
               if (!Array.isArray(parsed)) {
-                return okText(JSON.stringify({ error: 'invalid_request', message: 'match must be an array of strings (JSON array supported when string)' }));
+                return okToon({ error: 'invalid_request', message: 'match must be an array of strings (JSON array supported when string)' });
               }
               matchList = parsed.map(v => (typeof v === 'string' ? v.trim() : '')).filter(Boolean);
             } catch {
-              return okText(JSON.stringify({ error: 'invalid_request', message: 'match must be a valid JSON array of strings when provided as a string' }));
+              return okToon({ error: 'invalid_request', message: 'match must be a valid JSON array of strings when provided as a string' });
             }
           } else {
-            return okText(JSON.stringify({ error: 'invalid_request', message: 'match must be an array of strings' }));
+            return okToon({ error: 'invalid_request', message: 'match must be an array of strings' });
           }
           if (!matchList.length) throw new Error('match required');
           const ids = matchList.filter(validateTaskId);
@@ -1425,17 +1444,17 @@ function buildMcpServer(userId, userName) {
           const res = await dbSetTasksState(acc.owner_id, acc.project_id, { matchIds: ids, matchText: terms, state: normalizedState, task_info, parent_id, extra_note });
           if (res.changedIds.length === 0) {
             if ((res.notMatched?.length || 0) > 0 && (res.forbidden?.length || 0) === 0) {
-              return okText(JSON.stringify({ error: 'task_not_found', message: 'No matching tasks found for provided match terms', notMatched: res.notMatched }));
+              return okToon({ error: 'task_not_found', message: 'No matching tasks found for provided match terms', notMatched: res.notMatched });
             }
-            return okText(JSON.stringify({ changed: [], state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, notice: 'No items changed. Items may be locked or list changed. Pull updated list?', suggest: 'read_progress' }));
+            return okToon({ changed: [], state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, notice: 'No items changed. Items may be locked or list changed. Pull updated list?', suggest: 'read_progress' });
           }
           let hash = null;
           try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'progress_set_new_state', comment, modifiedBy: userId }); } catch {}
-          return okText(JSON.stringify({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, hash }));
+          return okToon({ changed: res.changedIds, state: normalizedState, notMatched: res.notMatched, forbidden: res.forbidden, hash });
         } catch (err) {
           const msg = String(err?.message || err || 'set_state failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'update_failed';
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'generate_task_ids': {
@@ -1457,38 +1476,38 @@ function buildMcpServer(userId, userName) {
           if (!existing.has(id) && !ids.has(id)) ids.add(id);
         }
         if (ids.size < n) {
-          return okText(JSON.stringify({ error: 'generation_exhausted', message: 'Unable to generate enough unique IDs', generated: Array.from(ids.values()) }));
+          return okToon({ error: 'generation_exhausted', message: 'Unable to generate enough unique IDs', generated: Array.from(ids.values()) });
         }
-        return okText(JSON.stringify({ ids: Array.from(ids.values()) }));
+        return okToon({ ids: Array.from(ids.values()) });
       }
       case 'list_project_logs': {
         const { project_id } = args || {};
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
-          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
+          if (!acc) return okToon({ error: 'project_not_found', message: 'project not found' });
           const logs = await vcListLogs(acc.owner_id, acc.project_id);
-          return okText(JSON.stringify({ logs }));
+          return okToon({ logs });
         } catch (err) {
           const msg = String(err?.message || err || 'list logs failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'list_failed';
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       case 'revert_project': {
         const { project_id, hash } = args || {};
         try {
           const acc = await dbResolveProjectAccess(userId, String(project_id || ''));
-          if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
-          if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
+          if (!acc) return okToon({ error: 'project_not_found', message: 'project not found' });
+          if (acc.permission === 'ro') return okToon({ error: 'read_only_project', message: 'You have read-only access to this project.' });
           const res = await vcRevertProject(acc.owner_id, acc.project_id, String(hash || ''), userId);
-          return okText(JSON.stringify({ project_id: acc.project_id, hash: res.hash }));
+          return okToon({ project_id: acc.project_id, hash: res.hash });
         } catch (err) {
           const msg = String(err?.message || err || 'revert failed');
           let code = 'revert_failed';
           if (/project not found/i.test(msg)) code = 'project_not_found';
           else if (/read_only_project/i.test(msg)) code = 'read_only_project';
           else if (/hash_not_found/i.test(msg)) code = 'hash_not_found';
-          return okText(JSON.stringify({ error: code, message: msg }));
+          return okToon({ error: code, message: msg });
         }
       }
       default:

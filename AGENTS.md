@@ -126,7 +126,7 @@ Notes:
 ## Architecture
 
 Minimal Node.js ESM app with Express + MCP Streamable HTTP:
-- `index.js` — Express app, MCP server (Streamable HTTP) at `POST /mcp`; defines and wires all MCP tools; mounts admin router under `/auth`.
+- `index.js` — Express app, MCP server (Streamable HTTP) at `POST /mcp`; defines and wires all MCP tools; mounts admin router under `/auth`. All MCP tool responses are returned in toon format (Token-Oriented Object Notation) instead of JSON to reduce LLM input tokens by 30-60%.
 - `src/db.js` — SQLite (sql.js) persistence, schema and CRUD for users, projects, and structured tasks (including cascade + lock rules).
 - `src/project.js` — Express router for project file uploads (list/upload/delete) with on-disk storage and permission checks.
 - `src/auth.js` — Admin auth middleware (Bearer `MAIN_API_KEY`), user API key auth for MCP, and `/auth` routes.
@@ -141,9 +141,29 @@ Minimal Node.js ESM app with Express + MCP Streamable HTTP:
 - `Dockerfile` — Container build; exposes `3000` and persists `/app/data`.
 - `README.md` — Quickstart, Docker, and tool reference.
 
+## Toon Format Integration
+
+All MCP tool responses are returned in **toon format** (Token-Oriented Object Notation) instead of standard JSON to optimize token usage for LLM consumption:
+
+- **Package**: `@toon-format/toon` (https://github.com/toon-format/toon)
+- **Token savings**: Approximately 30-60% fewer tokens on structured data compared to formatted JSON
+- **Database storage**: Still uses standard JSON (toon format is ONLY used for MCP tool responses to LLMs)
+- **Error handling**: Automatic fallback to JSON if toon encoding fails
+- **Testing**: The test suite includes toon-to-JSON decoding to verify responses
+
+Example transformation:
+```json
+// JSON (original)
+{ "projects": [{ "id": 1, "name": "test" }] }
+
+// Toon (returned to LLM)
+projects[1]{id,name}:
+  1,test
+```
+
 ## Notes
 
-- No formal test framework; `test.js` is a self-contained smoke test (`pnpm test`).
+- No formal test framework; `test.js` is a self-contained smoke test (`pnpm test`). Tests include toon format decoding.
 - No TypeScript; ESM JavaScript only.
 - No build system; runs directly on Node.js.
 - pnpm is recommended.

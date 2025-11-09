@@ -57,6 +57,35 @@ function assert(cond, msg) {
 }
 
 async function run() {
+  const useMockAi = String(process.env.MOCK_AI || '').toLowerCase() === 'true';
+  let mockAiServer = null;
+
+  // Start mock AI server if requested
+  if (useMockAi) {
+    const MOCK_AI_PORT = 43333;
+    console.log('[subagent] Starting mock AI server on port', MOCK_AI_PORT);
+    mockAiServer = spawn(process.execPath, ['test/mock-ai-server.js'], {
+      env: { ...process.env, MOCK_AI_PORT: String(MOCK_AI_PORT) },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Wait for mock server to be ready
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Mock AI server timeout')), 5000);
+      const checkReady = setInterval(async () => {
+        try {
+          const res = await fetch(`http://127.0.0.1:${MOCK_AI_PORT}/health`);
+          if (res.ok) {
+            clearInterval(checkReady);
+            clearTimeout(timeout);
+            console.log('[subagent] Mock AI server is ready');
+            resolve();
+          }
+        } catch {}
+      }, 100);
+    });
+  }
+
   console.log('[subagent] Starting server on port', PORT);
   const child = spawn(process.execPath, ['index.js'], {
     env: {
@@ -64,11 +93,11 @@ async function run() {
       PORT: String(PORT),
       HOST: 'localhost',
       USE_EXTERNAL_AI: 'true',
-      AI_API_TYPE: process.env.AI_API_TYPE || 'google',
-      AI_MODEL: process.env.AI_MODEL || 'gemini-2.5-flash',
+      AI_API_TYPE: useMockAi ? 'openai_com' : (process.env.AI_API_TYPE || 'google'),
+      AI_MODEL: process.env.AI_MODEL || (useMockAi ? 'mock-model' : 'gemini-2.5-flash'),
       AI_TIMEOUT: process.env.AI_TIMEOUT || '45',
-      AI_API_KEY: process.env.AI_API_KEY || 'sk-1234',
-      AI_BASE_ENDPOINT: process.env.AI_BASE_ENDPOINT || '', // Other than compat, no URL needs to be provided
+      AI_API_KEY: process.env.AI_API_KEY || (useMockAi ? 'mock-key-12345' : 'sk-1234'),
+      AI_BASE_ENDPOINT: useMockAi ? 'http://127.0.0.1:43333' : (process.env.AI_BASE_ENDPOINT || ''),
       MAIN_API_KEY: 'test-main-key',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -174,6 +203,9 @@ async function run() {
   } finally {
     try { await new Promise(r => setTimeout(r, 50)); } catch {}
     try { child.kill('SIGINT'); } catch {}
+    if (mockAiServer) {
+      try { mockAiServer.kill('SIGINT'); } catch {}
+    }
   }
 }
 

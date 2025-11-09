@@ -333,3 +333,5 @@ Examples (curl):
 ## Testing Notes
 
 - `node test/test-files.js` exercises the `/project/files` workflow (owner/RW uploads, RO restrictions, replacement + delete cleanup).
+- `pnpm test:subagent:mock` runs subagent tests with a mock AI server (no API keys required). The mock server simulates OpenAI-compatible chat/completions endpoints for testing without external API calls.
+- Mock AI server can be started standalone: `node test/mock-ai-server.js` (default port: 43333).

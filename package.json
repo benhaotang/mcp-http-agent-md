@@ -22,6 +22,7 @@
     "test:share": "node test/test-share.js",
     "test:mcp-share": "node test/test-mcp-share.js",
     "test:subagent": "node test/test-subagent.js",
+    "test:subagent:mock": "MOCK_AI=true node test/test-subagent.js",
     "test:mcp": "node test/mcp.js",
     "test:files": "node test/test-files.js"
   },

@@ -2,9 +2,25 @@ import { spawn } from 'node:child_process';
 import process from 'node:process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { decode as decodeToon } from '@toon-format/toon';
 
 const PORT = process.env.TEST_SUBAGENT_PORT ? Number(process.env.TEST_SUBAGENT_PORT) : 43222;
 const BASE = `http://localhost:${PORT}/mcp`;
+
+// Helper to parse MCP tool responses (toon or JSON format)
+function parseResponse(text) {
+  if (!text) return {};
+  try {
+    const decoded = decodeToon(text);
+    return decoded;
+  } catch (toonErr) {
+    try {
+      return JSON.parse(text);
+    } catch (jsonErr) {
+      return { _raw: text };
+    }
+  }
+}
 
 async function waitForServer(proc, timeoutMs = 10000) {
   const start = Date.now();
@@ -86,14 +102,14 @@ async function run() {
     const proj = `subagent_proj_${Date.now()}`;
     const spId = `sp-${Math.random().toString(36).slice(2, 10)}`;
     const initRes = await client.callTool({ name: 'init_project', arguments: { name: proj } });
-    const initPayload = JSON.parse(initRes.content?.[0]?.text || '{}');
+    const initPayload = parseResponse(initRes.content?.[0]?.text || '{}');
     assert(initPayload?.hash, 'init_project should return hash');
     assert(initPayload?.id, 'init_project should return project id');
     const projectId = initPayload.id;
 
     const tasks = [ { task_id: 'work', task_info: 'Simple subagent task', status: 'open' } ];
     const spInitRes = await client.callTool({ name: 'scratchpad_initialize', arguments: { project_id: projectId, tasks } });
-    const spInit = JSON.parse(spInitRes.content?.[0]?.text || '{}');
+    const spInit = parseResponse(spInitRes.content?.[0]?.text || '{}');
     assert(spInit?.scratchpad_id, 'scratchpad_initialize should return scratchpad_id');
 
     // Run subagent
@@ -104,7 +120,7 @@ async function run() {
       saArgs.tool = 'all';
     }
     const runRes = await client.callTool({ name: 'scratchpad_subagent', arguments: saArgs });
-    const run = JSON.parse(runRes.content?.[0]?.text || '{}');
+    const run = parseResponse(runRes.content?.[0]?.text || '{}');
     assert(typeof run.run_id === 'string' && run.run_id.length > 0, 'run_id must be returned');
     assert(['success','in_progress'].includes(run.status), `unexpected initial status: ${run.status}`);
 
@@ -112,7 +128,7 @@ async function run() {
     let finalStatus = run.status;
     if (finalStatus === 'in_progress') {
       const statusRes = await client.callTool({ name: 'scratchpad_subagent_status', arguments: { project_id: projectId, run_id: run.run_id } });
-      const status = JSON.parse(statusRes.content?.[0]?.text || '{}');
+      const status = parseResponse(statusRes.content?.[0]?.text || '{}');
       assert(status?.run_id === run.run_id, 'status run_id mismatch');
       assert(['success','failure','in_progress'].includes(status.status), 'invalid status from status tool');
       finalStatus = status.status;
@@ -121,7 +137,7 @@ async function run() {
     // If finished successfully, verify scratchpad content was appended
     if (finalStatus === 'success') {
       const reviewRes = await client.callTool({ name: 'review_scratchpad', arguments: { project_id: projectId, scratchpad_id: spInit.scratchpad_id } });
-      const review = JSON.parse(reviewRes.content?.[0]?.text || '{}');
+      const review = parseResponse(reviewRes.content?.[0]?.text || '{}');
       const work = (review.tasks || []).find(t => String(t.task_id) === 'work');
       assert(work, 'work task should exist');
       assert(typeof work.scratchpad === 'string' && work.scratchpad.includes('[subagent run-'), 'scratchpad should include subagent output marker');
@@ -134,7 +150,7 @@ async function run() {
     if (apiType === 'mcp') {
       const missingArgs = { project_id: projectId, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'test', tool: ['__nonexistent_server__'] };
       const missingRes = await client.callTool({ name: 'scratchpad_subagent', arguments: missingArgs });
-      const missing = JSON.parse(missingRes.content?.[0]?.text || '{}');
+      const missing = parseResponse(missingRes.content?.[0]?.text || '{}');
       assert(missing?.status === 'failure', 'Expected failure status for missing MCP server selection');
       assert(String(missing?.error || '').includes('mcp_requested_servers_not_found'), 'Expected mcp_requested_servers_not_found error');
       console.log('[subagent] Missing MCP server selection correctly failed.');
@@ -144,7 +160,7 @@ async function run() {
     if (apiType !== 'mcp') {
       const fakeToolArgs = { project_id: projectId, scratchpad_id: spInit.scratchpad_id, task_id: 'work', prompt: 'test', tool: ['fake_tool', 'another_fake_tool'] };
       const fakeToolRes = await client.callTool({ name: 'scratchpad_subagent', arguments: fakeToolArgs });
-      const fakeToolRun = JSON.parse(fakeToolRes.content?.[0]?.text || '{}');
+      const fakeToolRun = parseResponse(fakeToolRes.content?.[0]?.text || '{}');
       assert(fakeToolRun?.status === 'failure', 'Expected failure status for fake_tool');
       assert(String(fakeToolRun?.error || '').includes('Tool(s) not supported'), 'Expected "Tool(s) not supported" error for fake_tool');
       assert(String(fakeToolRun?.error || '').includes('[fake_tool, another_fake_tool]'), 'Error message should contain the invalid tools');

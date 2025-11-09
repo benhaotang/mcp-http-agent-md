@@ -2,6 +2,22 @@ import { spawn } from 'node:child_process';
 import process from 'node:process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { decode as decodeToon } from '@toon-format/toon';
+
+// Helper to parse MCP tool responses (toon or JSON format)
+function parseResponse(text) {
+  if (!text) return {};
+  try {
+    const decoded = decodeToon(text);
+    return decoded;
+  } catch (toonErr) {
+    try {
+      return JSON.parse(text);
+    } catch (jsonErr) {
+      return { _raw: text };
+    }
+  }
+}
 
 const PORT = process.env.TEST_PORT ? Number(process.env.TEST_PORT) : 43113;
 const BASE = `http://localhost:${PORT}`;
@@ -83,7 +99,7 @@ async function run() {
     const t1 = new StreamableHTTPClientTransport(new URL(`${MCP}?apiKey=${encodeURIComponent(u1.apiKey)}`));
     await client1.connect(t1);
     const initRes = await client1.callTool({ name: 'init_project', arguments: { name: projName } });
-    const initJson = JSON.parse(initRes.content?.[0]?.text || '{}');
+    const initJson = parseResponse(initRes.content?.[0]?.text || '{}');
     assert(initJson.hash, 'init_project should return hash');
     assert(initJson.id, 'init_project should return project id');
     const projectId = initJson.id;
@@ -103,7 +119,7 @@ async function run() {
     const t2 = new StreamableHTTPClientTransport(new URL(`${MCP}?apiKey=${encodeURIComponent(u2.apiKey)}`));
     await client2.connect(t2);
     const readBefore = await client2.callTool({ name: 'read_agent', arguments: { project_id: projectId } });
-    const readBeforeJson = JSON.parse(readBefore.content?.[0]?.text || '{}');
+    const readBeforeJson = parseResponse(readBefore.content?.[0]?.text || '{}');
     assert(readBeforeJson.error === 'project_not_found', 'read_agent should be project_not_found before share');
 
     // Share RO to u2
@@ -114,7 +130,7 @@ async function run() {
     // list_projects shows Read-Only suffix and project data
     const list2 = await client2.listTools({}); // ensure connected
     const listProjRes = await client2.callTool({ name: 'list_projects', arguments: {} });
-    const listProjJson = JSON.parse(listProjRes.content?.[0]?.text || '{}');
+    const listProjJson = parseResponse(listProjRes.content?.[0]?.text || '{}');
     const projects = listProjJson.projects || [];
     assert(Array.isArray(projects), 'list_projects should return array of project objects');
     const sharedProj = projects.find(p => p.id === projectId);
@@ -122,7 +138,7 @@ async function run() {
 
     // write_agent should return read_only_project
     const writeRo = await client2.callTool({ name: 'write_agent', arguments: { project_id: projectId, content: '# agent\nfrom u2' } });
-    const writeRoJson = JSON.parse(writeRo.content?.[0]?.text || '{}');
+    const writeRoJson = parseResponse(writeRo.content?.[0]?.text || '{}');
     assert(writeRoJson.error === 'read_only_project', 'RO participant cannot write');
 
     // Upgrade to RW
@@ -132,7 +148,7 @@ async function run() {
     // RW write should succeed and commit with Modified by
     await client2.callTool({ name: 'write_agent', arguments: { project_id: projectId, content: '# agent\nRW edit' } });
     const logsRes = await client2.callTool({ name: 'list_project_logs', arguments: { project_id: projectId } });
-    const logsJson = JSON.parse(logsRes.content?.[0]?.text || '{}');
+    const logsJson = parseResponse(logsRes.content?.[0]?.text || '{}');
     // Commit messages no longer have "Modified by" prefix since we have the modified_by field for blame
 
     // Test modified_by field in list_project_logs
@@ -144,17 +160,17 @@ async function run() {
 
     // Test project rename restriction for shared projects
     const renameAttempt = await client2.callTool({ name: 'rename_project', arguments: { project_id: projectId, newName: 'NewName' } });
-    const renameJson = JSON.parse(renameAttempt.content?.[0]?.text || '{}');
+    const renameJson = parseResponse(renameAttempt.content?.[0]?.text || '{}');
     assert(renameJson.error === 'forbidden', 'RW participant should not be able to rename project');
     
     // Test project delete restriction for shared projects
     const deleteAttempt = await client2.callTool({ name: 'delete_project', arguments: { project_id: projectId } });
-    const deleteJson = JSON.parse(deleteAttempt.content?.[0]?.text || '{}');
+    const deleteJson = parseResponse(deleteAttempt.content?.[0]?.text || '{}');
     assert(deleteJson.error === 'forbidden', 'RW participant should not be able to delete project');
     
     // Owner should be able to rename
     const ownerRename = await client1.callTool({ name: 'rename_project', arguments: { project_id: projectId, newName: 'OwnerRenamed' } });
-    const ownerRenameJson = JSON.parse(ownerRename.content?.[0]?.text || '{}');
+    const ownerRenameJson = parseResponse(ownerRename.content?.[0]?.text || '{}');
     assert(ownerRenameJson.hash, 'Owner should be able to rename project and get hash back');
 
     // Test revert restriction to consecutive user commits
@@ -163,7 +179,7 @@ async function run() {
     
     // Get current logs to find commit hashes
     const newLogsRes = await client1.callTool({ name: 'list_project_logs', arguments: { project_id: projectId } });
-    const newLogsJson = JSON.parse(newLogsRes.content?.[0]?.text || '{}');
+    const newLogsJson = parseResponse(newLogsRes.content?.[0]?.text || '{}');
     const newLogs = newLogsJson.logs || [];
     
     // Find commits by user
@@ -177,20 +193,20 @@ async function run() {
     // which would be discarded in a linear history
     const u2LatestHash = u2Commits[u2Commits.length - 1].hash;
     const revertToU2Latest = await client2.callTool({ name: 'revert_project', arguments: { project_id: projectId, hash: u2LatestHash } });
-    const revertToU2LatestJson = JSON.parse(revertToU2Latest.content?.[0]?.text || '{}');
+    const revertToU2LatestJson = parseResponse(revertToU2Latest.content?.[0]?.text || '{}');
     assert(revertToU2LatestJson.error, 'u2 should NOT be able to revert to their commit when it would discard others work');
     
     // u1 should be able to revert to their most recent commit (which is the latest overall)
     const u1LatestHash = u1Commits[u1Commits.length - 1].hash;
     const revertToU1Latest = await client1.callTool({ name: 'revert_project', arguments: { project_id: projectId, hash: u1LatestHash } });
-    const revertToU1LatestJson = JSON.parse(revertToU1Latest.content?.[0]?.text || '{}');
+    const revertToU1LatestJson = parseResponse(revertToU1Latest.content?.[0]?.text || '{}');
     assert(revertToU1LatestJson.hash === u1LatestHash, 'u1 should be able to revert to their latest commit');
     
     // But u2 should NOT be able to revert to u1's init commit (if there's a u2 commit in between)
     if (u1Commits.length > 1 && u2Commits.length > 0) {
       const u1InitHash = u1Commits[0].hash; // First commit by u1
       const revertToU1Init = await client2.callTool({ name: 'revert_project', arguments: { project_id: projectId, hash: u1InitHash } });
-      const revertToU1InitJson = JSON.parse(revertToU1Init.content?.[0]?.text || '{}');
+      const revertToU1InitJson = parseResponse(revertToU1Init.content?.[0]?.text || '{}');
       assert(revertToU1InitJson.error || revertToU1InitJson.message, 'u2 should not be able to revert to old u1 commit');
     }
 
@@ -201,7 +217,7 @@ async function run() {
     
     // u2 (now RO) should not be able to revert to any commit
     const roRevertAttempt = await client2.callTool({ name: 'revert_project', arguments: { project_id: projectId, hash: u1LatestHash } });
-    const roRevertJson = JSON.parse(roRevertAttempt.content?.[0]?.text || '{}');
+    const roRevertJson = parseResponse(roRevertAttempt.content?.[0]?.text || '{}');
     assert(roRevertJson.error === 'read_only_project', 'RO participant should not be able to revert project');
 
     console.log('MCP share tests passed');

@@ -2,10 +2,26 @@ import { spawn } from 'node:child_process';
 import process from 'node:process';
 import path from 'node:path';
 import os from 'node:os';
+import { decode as decodeToon } from '@toon-format/toon';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+
+// Helper to parse MCP tool responses (toon or JSON format)
+function parseResponse(text) {
+  if (!text) return {};
+  try {
+    const decoded = decodeToon(text);
+    return decoded;
+  } catch (toonErr) {
+    try {
+      return JSON.parse(text);
+    } catch (jsonErr) {
+      return { _raw: text };
+    }
+  }
+}
 
 const PORT = process.env.TEST_PORT ? Number(process.env.TEST_PORT) : 43114;
 const BASE = `http://localhost:${PORT}`;
@@ -156,7 +172,7 @@ async function run() {
     const transport = new StreamableHTTPClientTransport(new URL(`${MCP}?apiKey=${encodeURIComponent(owner.apiKey)}`));
     await ownerClient.connect(transport);
     const initRes = await ownerClient.callTool({ name: 'init_project', arguments: { name: projectName } });
-    const initJson = JSON.parse(initRes.content?.[0]?.text || '{}');
+    const initJson = parseResponse(initRes.content?.[0]?.text || '{}');
     assert(initJson?.id, 'Project init should return id');
     const projectId = initJson.id;
 

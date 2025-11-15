@@ -621,18 +621,8 @@ function buildMcpServer(userId, userName) {
         }
       },
       {
-        name: 'generate_task_ids',
-        description: 'Generate N random 8-character task IDs (lowercase a-z0-9) not used by this user across any project. Note: When using progress_add, you can now use the simplified format (string or array of strings) which auto-generates task_ids, removing the need to call this tool first.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            count: { type: 'number', minimum: 1, maximum: 200, default: 5 }
-          }
-        }
-      },
-      {
         name: 'progress_add',
-        description: 'Add one or more structured project-level tasks. Supports two formats: (1) Simplified: provide a string or array of strings (task descriptions only), and the backend auto-generates unique task_ids and returns them in the response. (2) Full: provide an array of task objects with explicit task_id (8-char lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note. The simplified format is recommended for agents as it removes the need to call generate_task_ids first. Optionally include a commit message via comment.' + agentsReminder,
+        description: 'Add one or more structured project-level tasks. Supports two formats: (1) Simplified (recommended): provide a string or array of strings (task descriptions only), and the backend auto-generates unique task_ids and returns them in the response. (2) Full: provide an array of task objects with explicit task_id (8-char lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note. Optionally include a commit message via comment.' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1521,16 +1511,6 @@ function buildMcpServer(userId, userName) {
           const msg = String(err?.message || err || 'set_state failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'update_failed';
           return okText(JSON.stringify({ error: code, message: msg }));
-        }
-      }
-      case 'generate_task_ids': {
-        const { count } = args || {};
-        const n = Math.min(200, Math.max(1, Number.isFinite(count) ? Math.floor(count) : 5));
-        try {
-          const ids = await generateUniqueTaskIds(userId, n);
-          return okText(JSON.stringify({ ids }));
-        } catch (err) {
-          return okText(JSON.stringify({ error: 'generation_exhausted', message: String(err?.message || 'Unable to generate enough unique IDs') }));
         }
       }
       case 'list_project_logs': {

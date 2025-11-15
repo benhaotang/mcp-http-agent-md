@@ -159,11 +159,10 @@ Expose these tools via MCP CallTool (Streamable HTTP). All tools operate by proj
 - `write_agent`: Write AGENTS.md `{ project_id, mode=full|patch|diff, content|patch, comment? }` (RW/owner). Patch/diff requires a unified diff. On success, responses include the updated `hash`.
 - `read_progress`: Read structured tasks `{ project_id, only? }` → `{ tasks, markdown }`. `only` filters by `pending | in_progress | completed | archived` (synonyms accepted). Archived tasks are excluded unless explicitly requested.
 - `progress_add`: Add structured tasks `{ project_id, item, comment? }`. Supports two formats:
-  - **Simplified (recommended for agents)**: `item` can be a string or array of strings (task descriptions only). The backend auto-generates unique task_ids and returns them in `generated_task_ids`.
+  - **Simplified (recommended)**: `item` can be a string or array of strings (task descriptions only). The backend auto-generates unique task_ids and returns them in `generated_task_ids`.
   - **Full format**: `item` is an array of task objects with explicit `task_id` (8-char lowercase a-z0-9), `task_info`, optional `parent_id`, `status`, `extra_note`.
   Duplicate `task_id` are skipped in `skipped`. Creates a new commit; response includes `hash` when items were added.
 - `progress_set_new_state`: Update tasks `{ project_id, match, state?, task_info?, parent_id?, extra_note?, comment? }`. Completing or archiving cascades to descendants. Lock rules apply (cannot edit locked items unless unlocking).
-- `generate_task_ids`: Generate N unique 8‑char IDs `{ count? }`. Note: When using `progress_add`, you can use the simplified format (string or array of strings) which auto-generates task_ids, removing the need to call this tool first.
 - `get_agents_md_best_practices_and_examples`: Best‑practices + examples from `example_agent_md.json`.
 - `list_project_logs`: List commit logs `{ project_id }` → `{ logs: [{ hash, message, modified_by, created_at }] }`. The `modified_by` field shows the username of who made each commit.
 - `revert_project`: Revert a project `{ project_id, hash }`. Participants can only revert to commits in their most recent consecutive sequence from the end (to prevent discarding others' work). On success, response includes `{ project_id, hash }`.
@@ -203,11 +202,11 @@ Structured tasks format:
 - `status` is one of `pending | in_progress | completed | archived` (synonyms accepted on input).
 - `parent_id` (optional) should reference the root task's `task_id` in the same project. This enables arbitrary-depth nesting; a child can itself be a root for deeper descendants.
 
-**Simplified task creation (recommended for agents):**
-- When calling `progress_add`, you can now provide just task descriptions (string or array of strings) instead of full task objects.
+**Simplified task creation (recommended):**
+- When calling `progress_add`, provide just task descriptions (string or array of strings) instead of full task objects.
 - The backend automatically generates unique 8-character task_ids and returns them in the response under `generated_task_ids`.
-- This eliminates the need to call `generate_task_ids` before creating tasks.
 - Example: `progress_add({ project_id: "abc123", item: ["Implement feature X", "Write tests", "Update docs"] })` will create three tasks with auto-generated IDs.
+- For single tasks: `progress_add({ project_id: "abc123", item: "Implement feature X" })`.
 
 Project selection: All task tools take a `name` (project name). The server resolves it to the correct internal `project_id`—you never need to provide `project_id` directly.
 

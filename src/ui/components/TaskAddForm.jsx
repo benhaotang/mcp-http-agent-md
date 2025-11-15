@@ -20,12 +20,11 @@ export default function TaskAddForm({ projectId, onAdded, readOnly }) {
     if (readOnly) { toast.error('Read-only'); return; }
     setAdding(true);
     try {
-      const ids = await callTool(apiKey, 'generate_task_ids', { count: 1 });
-      const id = ids.ids?.[0];
       const taskInfo = text.trim();
-      const comment = `${shortUserFromKey(apiKey)} created task ${id}: ${taskInfo}`;
-      await callTool(apiKey, 'progress_add', { project_id: projectId, item: [{ task_id: id, task_info: taskInfo, status: 'pending' }], comment });
-      toast.success('Task added');
+      const comment = `${shortUserFromKey(apiKey)} created task: ${taskInfo}`;
+      const result = await callTool(apiKey, 'progress_add', { project_id: projectId, item: taskInfo, comment });
+      const generatedId = result.generated_task_ids?.[0] || 'unknown';
+      toast.success(`Task added (${generatedId})`);
       setText('');
       onAdded?.();
     } catch (err) {

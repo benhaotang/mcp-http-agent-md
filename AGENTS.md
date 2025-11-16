@@ -152,16 +152,13 @@ Minimal Node.js ESM app with Express + MCP Streamable HTTP:
 
 Expose these tools via MCP CallTool (Streamable HTTP). All tools operate by project_id (except init_project, which creates a new project by name and returns its id):
 - `list_projects`: Lists accessible projects. Returns `{ projects: [{ id, name, owner_id, permission, read_only }] }`.
-- `init_project`: Create/init project `{ name, agent?, progress? }`. Returns `{ id, name, hash }`.
+- `init_project`: Create/init project `{ name, agent?, progress? }`. The `progress` parameter accepts a string or array of strings (task descriptions). Returns `{ id, name, hash, generated_task_ids? }`.
 - `delete_project`: Delete a project `{ project_id }` (owner only).
 - `rename_project`: Rename a project `{ project_id, newName, comment? }` (owner only).
 - `read_agent`: Read AGENTS.md `{ project_id, lineNumbers? }` (RO/RW/owner).
 - `write_agent`: Write AGENTS.md `{ project_id, mode=full|patch|diff, content|patch, comment? }` (RW/owner). Patch/diff requires a unified diff. On success, responses include the updated `hash`.
 - `read_progress`: Read structured tasks `{ project_id, only? }` → `{ tasks, markdown }`. `only` filters by `pending | in_progress | completed | archived` (synonyms accepted). Archived tasks are excluded unless explicitly requested.
-- `progress_add`: Add structured tasks `{ project_id, item, comment? }`. Supports two formats:
-  - **Simplified (recommended)**: `item` can be a string or array of strings (task descriptions only). The backend auto-generates unique task_ids and returns them in `generated_task_ids`.
-  - **Full format**: `item` is an array of task objects with explicit `task_id` (8-char lowercase a-z0-9), `task_info`, optional `parent_id`, `status`, `extra_note`.
-  Duplicate `task_id` are skipped in `skipped`. Creates a new commit; response includes `hash` when items were added.
+- `progress_add`: Add structured tasks `{ project_id, item, comment? }`. `item` can be a string or array of strings (task descriptions). The backend auto-generates unique task_ids and returns them in `generated_task_ids`. Creates a new commit; response includes `hash` when items were added.
 - `progress_set_new_state`: Update tasks `{ project_id, match, state?, task_info?, parent_id?, extra_note?, comment? }`. Completing or archiving cascades to descendants. Lock rules apply (cannot edit locked items unless unlocking).
 - `get_agents_md_best_practices_and_examples`: Best‑practices + examples from `example_agent_md.json`.
 - `list_project_logs`: List commit logs `{ project_id }` → `{ logs: [{ hash, message, modified_by, created_at }] }`. The `modified_by` field shows the username of who made each commit.
@@ -196,17 +193,18 @@ Why no delete/list? Scratchpads are RAM-like and expected to be cleared external
 
 Transport: Streamable HTTP (stateless JSON-RPC). Clients POST to `/mcp?apiKey=YOUR_USER_API_KEY` or use `Authorization: Bearer <apiKey>`. `GET/DELETE /mcp` return 405.
 
-Structured tasks format:
+**Task creation:**
+- Call `progress_add` with task descriptions (string or array of strings).
+- The backend automatically generates unique 8-character task_ids (lowercase a-z0-9) and returns them in `generated_task_ids`.
+- Examples:
+  - Single task: `progress_add({ project_id: "abc123", item: "Implement feature X" })`
+  - Multiple tasks: `progress_add({ project_id: "abc123", item: ["Implement feature X", "Write tests", "Update docs"] })`
+- Task status defaults to `pending`. Use `progress_set_new_state` to update task properties after creation.
+
+Structured tasks format (internal):
 - Task object: `{ task_id, task_info, parent_id?, status?, extra_note? }`.
-- `task_id` MUST be exactly 8 characters, lowercase `a-z` and `0-9` only (e.g., `abcd1234`). Invalid IDs are rejected.
 - `status` is one of `pending | in_progress | completed | archived` (synonyms accepted on input).
 - `parent_id` (optional) should reference the root task's `task_id` in the same project. This enables arbitrary-depth nesting; a child can itself be a root for deeper descendants.
-
-**Simplified task creation (recommended):**
-- When calling `progress_add`, provide just task descriptions (string or array of strings) instead of full task objects.
-- The backend automatically generates unique 8-character task_ids and returns them in the response under `generated_task_ids`.
-- Example: `progress_add({ project_id: "abc123", item: ["Implement feature X", "Write tests", "Update docs"] })` will create three tasks with auto-generated IDs.
-- For single tasks: `progress_add({ project_id: "abc123", item: "Implement feature X" })`.
 
 Project selection: All task tools take a `name` (project name). The server resolves it to the correct internal `project_id`—you never need to provide `project_id` directly.
 

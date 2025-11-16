@@ -68,28 +68,39 @@ function userOps(userId, userName) {
       const rows = await dbListProjectsWithShares(userId);
       return rows;
     },
-    async initProject(name, { agent = defaultAgentMd(name), progress = [] } = {}) {
+    async initProject(name, { agent = defaultAgentMd(name), progress } = {}) {
       if (!validateProjectName(name)) throw new Error('Invalid project name');
       const agentJson = JSON.stringify({ content: agent });
       // Progress now stored in structured tasks table; keep placeholder in project row
       const progressJson = JSON.stringify({ content: '' });
       const res = await dbInitProject(userId, name, { agentJson, progressJson });
+
       // If structured tasks provided on init, try to insert them
-      const tasks = Array.isArray(progress) ? progress : [];
-      if (tasks.length) {
-        const valid = validateAndNormalizeTasks(tasks);
-        if (valid.invalid.length) {
-          res.invalid = valid.invalid;
+      let taskInfos = [];
+      if (typeof progress === 'string') {
+        const trimmed = progress.trim();
+        if (trimmed.length > 0) {
+          taskInfos = [trimmed];
         }
-        if (valid.tasks.length) {
-          const addRes = await dbAddTasks(userId, res.id, valid.tasks);
-          res.added = addRes.added;
-          res.exists = addRes.exists;
-        } else {
-          res.added = [];
-          res.exists = [];
-        }
+      } else if (Array.isArray(progress)) {
+        taskInfos = progress.filter(v => typeof v === 'string' && v.trim().length > 0).map(v => v.trim());
       }
+
+      if (taskInfos.length > 0) {
+        const generatedIds = await generateUniqueTaskIds(userId, taskInfos.length);
+        const tasks = taskInfos.map((info, i) => ({
+          task_id: generatedIds[i],
+          task_info: info,
+          parent_id: null,
+          status: 'pending',
+          extra_note: null
+        }));
+        const addRes = await dbAddTasks(userId, res.id, tasks);
+        res.added = addRes.added;
+        res.exists = addRes.exists;
+        res.generated_task_ids = generatedIds;
+      }
+
       try {
         const hash = await vcOnInitProject(userId, res.id);
         res.hash = hash;
@@ -217,40 +228,6 @@ async function generateUniqueTaskIds(userId, count) {
     throw new Error(`Unable to generate ${count} unique task IDs`);
   }
   return Array.from(ids.values());
-}
-
-// Accept tasks as array, single object, or JSON string of either; returns { tasks, invalid }
-function validateAndNormalizeTasks(input) {
-  let list = input;
-  if (typeof input === 'string') {
-    const s = input.trim();
-    try {
-      const parsed = JSON.parse(s);
-      list = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? [parsed] : []);
-    } catch {
-      list = [];
-    }
-  }
-  // If a single object was provided directly, wrap it into an array
-  if (!Array.isArray(list)) {
-    if (list && typeof list === 'object') list = [list];
-    else list = [];
-  }
-  const tasks = [];
-  const invalid = [];
-  for (const t of list) {
-    if (!t || typeof t !== 'object') { invalid.push({ item: t, reason: 'not_an_object' }); continue; }
-    const task_id = String(t.task_id || '').trim();
-    const task_info = String(t.task_info || '').trim();
-    const parent_id = t.parent_id == null ? null : String(t.parent_id).trim();
-    const extra_note = t.extra_note == null ? null : String(t.extra_note);
-    const status = normalizeStatus(t.status || 'pending');
-    if (!validateTaskId(task_id)) { invalid.push({ item: t, reason: 'invalid_task_id_format', hint: 'Use exactly 8 lowercase a-z0-9, e.g., abcd1234' }); continue; }
-    if (!task_info) { invalid.push({ item: t, reason: 'missing_task_info' }); continue; }
-    if (parent_id && !validateTaskId(parent_id)) { invalid.push({ item: t, reason: 'invalid_parent_id_format', hint: 'Use exactly 8 lowercase a-z0-9' }); continue; }
-    tasks.push({ task_id, task_info, parent_id, status, extra_note });
-  }
-  return { tasks, invalid };
 }
 
 function filterProgressContent(md, only) {
@@ -622,26 +599,15 @@ function buildMcpServer(userId, userName) {
       },
       {
         name: 'progress_add',
-        description: 'Add one or more structured project-level tasks. Supports two formats: (1) Simplified (recommended): provide a string or array of strings (task descriptions only), and the backend auto-generates unique task_ids and returns them in the response. (2) Full: provide an array of task objects with explicit task_id (8-char lowercase a-z0-9), task_info; optional parent_id (root task_id), status (pending|in_progress|completed|archived), extra_note. Optionally include a commit message via comment.' + agentsReminder,
+        description: 'Add one or more structured project-level tasks. Provide a string or array of strings (task descriptions). The backend automatically generates unique task_ids and returns them in the response under generated_task_ids. Optionally include a commit message via comment.' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
             project_id: { type: 'string' },
             item: {
               oneOf: [
-                { type: 'string', description: 'Single task description (simplified format, auto-generates task_id)' },
-                { type: 'array', items: { type: 'string' }, description: 'Array of task descriptions (simplified format, auto-generates task_ids)' },
-                { type: 'array', items: {
-                  type: 'object',
-                  properties: {
-                    task_id: { type: 'string', minLength: 8, maxLength: 8 },
-                    task_info: { type: 'string' },
-                    parent_id: { type: 'string', minLength: 8, maxLength: 8, description: 'Root task_id this task belongs under; enables arbitrary-depth nesting.' },
-                    status: { type: 'string', enum: ['pending','in_progress','completed','archived'] },
-                    extra_note: { type: 'string' }
-                  },
-                  required: ['task_id','task_info']
-                }, description: 'Array of full task objects (existing format)' }
+                { type: 'string', description: 'Single task description' },
+                { type: 'array', items: { type: 'string' }, description: 'Array of task descriptions' }
               ]
             },
             comment: { type: 'string' }
@@ -669,23 +635,18 @@ function buildMcpServer(userId, userName) {
       
       {
         name: 'init_project',
-        description: 'Create or initialize a project with optional agent content and structured tasks. Task IDs must be exactly 8 lowercase a-z0-9 (e.g., abcd1234). Use parent_id to reference the root task for nesting. ' + agentsReminder,
+        description: 'Create or initialize a project with optional agent content and structured tasks. Provide task descriptions as a string or array of strings. The backend automatically generates unique task_ids. ' + agentsReminder,
         inputSchema: {
           type: 'object',
           properties: {
             name: { type: 'string' },
             agent: { type: 'string' },
-            progress: { type: 'array', items: {
-              type: 'object',
-              properties: {
-                task_id: { type: 'string', minLength: 8, maxLength: 8 },
-                task_info: { type: 'string' },
-                parent_id: { type: 'string', minLength: 8, maxLength: 8, description: 'Root task_id for this task; enables nested subtasks' },
-                status: { type: 'string', enum: ['pending','in_progress','completed'] },
-                extra_note: { type: 'string' }
-              },
-              required: ['task_id','task_info']
-            } }
+            progress: {
+              oneOf: [
+                { type: 'string', description: 'Single task description' },
+                { type: 'array', items: { type: 'string' }, description: 'Array of task descriptions' }
+              ]
+            }
           },
           required: ['name']
         }
@@ -1109,9 +1070,7 @@ function buildMcpServer(userId, userName) {
             return okText(JSON.stringify({ error: 'invalid_request', message: 'Invalid project name. Allowed: letters, digits, space, . _ -' }));
           }
           const result = await ops.initProject(projName, { agent, progress });
-          // Tell agents about task_id constraint
-          const finalResult = { status: 'ok', note: 'Tasks use exactly 8 lowercase a-z0-9 IDs (e.g., abcd1234).', ...result };
-          return okText(JSON.stringify(finalResult));
+          return okText(JSON.stringify({ status: 'ok', ...result }));
         } catch (err) {
           const msg = String(err?.message || err || 'init failed');
           const code = /user not authenticated/i.test(msg) ? 'unauthorized' : (/project name required/i.test(msg) ? 'invalid_request' : 'init_failed');
@@ -1379,91 +1338,48 @@ function buildMcpServer(userId, userName) {
           if (!acc) return okText(JSON.stringify({ error: 'project_not_found', message: 'project not found' }));
           if (acc.permission === 'ro') return okText(JSON.stringify({ error: 'read_only_project', message: 'You have read-only access to this project.' }));
 
-          // Support both formats:
-          // 1. Simplified: string or array of strings (task_info only, auto-generate task_ids)
-          // 2. Full: array of task objects with task_id field (existing behavior)
-          let incoming;
-          let autoGeneratedIds = [];
-
+          // Parse item into array of task descriptions
+          let taskInfos = [];
           if (typeof item === 'string') {
             const trimmed = item.trim();
-            // Try parsing as JSON first
-            try {
-              const parsed = JSON.parse(trimmed);
-              if (Array.isArray(parsed)) {
-                // Check if it's an array of strings (simplified) or objects (full)
-                if (parsed.length > 0 && typeof parsed[0] === 'string') {
-                  // Simplified format: array of strings
-                  const taskInfos = parsed.filter(v => typeof v === 'string' && v.trim().length > 0);
-                  const ids = await generateUniqueTaskIds(userId, taskInfos.length);
-                  incoming = taskInfos.map((info, i) => ({ task_id: ids[i], task_info: info.trim(), status: 'pending' }));
-                  autoGeneratedIds = ids;
-                } else if (parsed.length > 0 && typeof parsed[0] === 'object') {
-                  // Full format: array of objects
-                  incoming = parsed;
-                } else {
-                  incoming = parsed;
-                }
-              } else {
-                // Single string (simplified format)
-                if (trimmed.length > 0) {
-                  const ids = await generateUniqueTaskIds(userId, 1);
-                  incoming = [{ task_id: ids[0], task_info: trimmed, status: 'pending' }];
-                  autoGeneratedIds = ids;
-                } else {
-                  incoming = [];
-                }
-              }
-            } catch {
-              // Not valid JSON, treat as single string (simplified format)
-              if (trimmed.length > 0) {
-                const ids = await generateUniqueTaskIds(userId, 1);
-                incoming = [{ task_id: ids[0], task_info: trimmed, status: 'pending' }];
-                autoGeneratedIds = ids;
-              } else {
-                incoming = [];
-              }
+            if (trimmed.length > 0) {
+              taskInfos = [trimmed];
             }
           } else if (Array.isArray(item)) {
-            // Check if it's an array of strings (simplified) or objects (full)
-            if (item.length > 0 && typeof item[0] === 'string') {
-              // Simplified format: array of strings
-              const taskInfos = item.filter(v => typeof v === 'string' && v.trim().length > 0);
-              const ids = await generateUniqueTaskIds(userId, taskInfos.length);
-              incoming = taskInfos.map((info, i) => ({ task_id: ids[i], task_info: info.trim(), status: 'pending' }));
-              autoGeneratedIds = ids;
-            } else {
-              // Full format: array of objects
-              incoming = item;
-            }
+            taskInfos = item.filter(v => typeof v === 'string' && v.trim().length > 0).map(v => v.trim());
           } else {
-            return okText(JSON.stringify({ error: 'invalid_request', message: 'item must be a string, array of strings, or array of task objects' }));
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'item must be a string or array of strings' }));
           }
 
-          const { tasks, invalid } = validateAndNormalizeTasks(incoming);
-          if (!tasks.length && invalid.length) {
-            return okText(JSON.stringify({ added: [], exists: [], invalid, notice: 'No valid tasks to add' }));
+          if (taskInfos.length === 0) {
+            return okText(JSON.stringify({ error: 'invalid_request', message: 'No valid task descriptions provided' }));
           }
+
+          // Generate unique IDs for all tasks
+          const generatedIds = await generateUniqueTaskIds(userId, taskInfos.length);
+
+          // Create task objects
+          const tasks = taskInfos.map((info, i) => ({
+            task_id: generatedIds[i],
+            task_info: info,
+            parent_id: null,
+            status: 'pending',
+            extra_note: null
+          }));
+
+          // Add tasks to database
           const res = await dbAddTasks(acc.owner_id, acc.project_id, tasks);
           let hash = null;
           if ((res.added?.length || 0) > 0) {
             try { hash = await vcCommitProject(acc.owner_id, acc.project_id, { action: 'progress_add', comment, modifiedBy: userId }); } catch {}
           }
 
-          // Return response with task_ids (either auto-generated or from input)
-          const response = {
+          return okText(JSON.stringify({
             added: res.added,
             skipped: res.exists,
-            invalid,
+            generated_task_ids: generatedIds,
             hash
-          };
-
-          // Include generated task_ids mapping when auto-generated
-          if (autoGeneratedIds.length > 0) {
-            response.generated_task_ids = autoGeneratedIds;
-          }
-
-          return okText(JSON.stringify(response));
+          }));
         } catch (err) {
           const msg = String(err?.message || err || 'add failed');
           const code = /project not found/i.test(msg) ? 'project_not_found' : 'add_failed';

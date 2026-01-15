@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { decode as toonDecode } from '@toon-format/toon';
 
 const PORT = process.env.TEST_PORT ? Number(process.env.TEST_PORT) : 43114;
 const BASE = `http://localhost:${PORT}`;
@@ -55,6 +56,13 @@ async function waitForServer(proc, timeoutMs = 10000) {
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'Assertion failed');
+}
+
+function parseResponse(text) {
+  if (!text || typeof text !== 'string') return {};
+  try { return toonDecode(text); } catch {
+    try { return JSON.parse(text); } catch { return {}; }
+  }
 }
 
 async function createUser(mainKey, name) {
@@ -156,7 +164,7 @@ async function run() {
     const transport = new StreamableHTTPClientTransport(new URL(`${MCP}?apiKey=${encodeURIComponent(owner.apiKey)}`));
     await ownerClient.connect(transport);
     const initRes = await ownerClient.callTool({ name: 'init_project', arguments: { name: projectName } });
-    const initJson = JSON.parse(initRes.content?.[0]?.text || '{}');
+    const initJson = parseResponse(initRes.content?.[0]?.text);
     assert(initJson?.id, 'Project init should return id');
     const projectId = initJson.id;
 

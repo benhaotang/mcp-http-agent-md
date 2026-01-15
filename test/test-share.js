@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import process from 'node:process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { decode as toonDecode } from '@toon-format/toon';
 
 const PORT = process.env.TEST_PORT ? Number(process.env.TEST_PORT) : 43112;
 const BASE = `http://localhost:${PORT}`;
@@ -40,6 +41,13 @@ async function waitForServer(proc, timeoutMs = 8000) {
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'Assertion failed');
+}
+
+function parseResponse(text) {
+  if (!text || typeof text !== 'string') return {};
+  try { return toonDecode(text); } catch {
+    try { return JSON.parse(text); } catch { return {}; }
+  }
 }
 
 async function createUser(mainKey, name) {
@@ -107,7 +115,7 @@ async function run() {
     const transport1 = new StreamableHTTPClientTransport(new URL(`${MCP}?apiKey=${encodeURIComponent(user1.apiKey)}`));
     await client1.connect(transport1);
     const initRes = await client1.callTool({ name: 'init_project', arguments: { name } });
-    const initJson = JSON.parse(initRes.content?.[0]?.text || '{}');
+    const initJson = parseResponse(initRes.content?.[0]?.text);
     assert(initJson?.hash, 'init_project should return hash');
     assert(initJson?.id, 'init_project should return project id');
     const projectId = initJson.id;
@@ -156,7 +164,7 @@ async function run() {
     // Backup and revert still work (owner)
     const write1 = await client1.callTool({ name: 'write_agent', arguments: { project_id: projectId, content: '# agent\nowner edit' } });
     const logs1Res = await client1.callTool({ name: 'list_project_logs', arguments: { project_id: projectId } });
-    const logs1 = JSON.parse(logs1Res.content?.[0]?.text || '{}');
+    const logs1 = parseResponse(logs1Res.content?.[0]?.text);
     assert(Array.isArray(logs1.logs) && logs1.logs.length >= 2, 'Logs should have at least two entries');
     const initialHash = logs1.logs[0]?.hash; // initial commit first in history
     const headHash = logs1.logs[logs1.logs.length - 1]?.hash; // latest commit last
